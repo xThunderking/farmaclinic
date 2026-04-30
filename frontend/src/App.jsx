@@ -1,0 +1,2477 @@
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { 
+  Users, UserPlus, Activity, Pill, ClipboardList, 
+  ArrowLeft, Plus, Trash2, AlertTriangle, ShieldAlert, 
+  CheckCircle, Printer, FileSpreadsheet, Search, Filter,
+  Microscope, Lock, LogOut, Settings, ShieldCheck, UserCog, Bug, FileWarning, RefreshCcw, Layers, X, PieChart, ListChecks, TestTube, History, CheckSquare, XCircle, Unlock
+} from 'lucide-react';
+
+// --- Constantes y Listas ---
+const PRESENTACIONES = ["Amp", "Fam", "Fco", "Cap", "Tab", "Sup", "Susp", "SL", "Jer Prell"];
+const VIAS = ["IV", "IM", "VO", "SC", "Rectal", "Inh", "Tópica", "Oftálmica", "Ótica", "Vaginal", "SNG", "Nasal", "SL"];
+const CATEGORIAS_FARMACO = ["General", "Antibiótico", "Alto Riesgo"];
+const IDONEIDAD_OPCIONES = ["Pendiente", "Idóneo", "No Idóneo"];
+const CATEGORIAS_PRM = ["Dispensación", "Prescripción", "Transcripción", "Preparación", "Administración"];
+
+const TIPOS_PACIENTE = ["Quirúrgico", "No quirúrgico"];
+const ESPECIALIDADES = [
+  "Algología", "Angiología", "Cardiología", "Cirugía general", "Gastroenterología", 
+  "Geriatría", "Ginecología y obstetricia", "Hematología", "Hemodiálisis", "Infectología", 
+  "Medicina interna", "Nefrología", "Neonatología", "Neumología", "Neurología", 
+  "Oftalmología", "Oncología", "Traumatología y ortopedia", "Otorrinolaringología", "Pediatría", 
+  "Plástica", "Psiquiatría", "Urología"
+];
+
+const MESES = [
+  { val: '01', label: 'Enero' }, { val: '02', label: 'Febrero' }, { val: '03', label: 'Marzo' },
+  { val: '04', label: 'Abril' }, { val: '05', label: 'Mayo' }, { val: '06', label: 'Junio' },
+  { val: '07', label: 'Julio' }, { val: '08', label: 'Agosto' }, { val: '09', label: 'Septiembre' },
+  { val: '10', label: 'Octubre' }, { val: '11', label: 'Noviembre' }, { val: '12', label: 'Diciembre' }
+];
+
+const ANIOS = Array.from({length: 10}, (_, i) => (new Date().getFullYear() - 5 + i).toString());
+
+const LAB_TEMPLATES = {
+  "Función Renal": [
+    { name: "Creatinina Sérica", min: 0.7, max: 1.2, unit: "mg/dL" },
+    { name: "Nitrógeno Ureico (BUN)", min: 7, max: 20, unit: "mg/dL" }
+  ],
+  "Función Hepática": [
+    { name: "AST (TGO)", min: 8, max: 33, unit: "U/L" },
+    { name: "ALT (TGP)", min: 7, max: 55, unit: "U/L" },
+    { name: "Bilirrubina Total", min: 0.1, max: 1.2, unit: "mg/dL" }
+  ],
+  "Electrolitos": [
+    { name: "Potasio (K)", min: 3.5, max: 5, unit: "mEq/L" },
+    { name: "Sodio (Na)", min: 135, max: 145, unit: "mEq/L" },
+    { name: "Magnesio (Mg)", min: 1.7, max: 2.2, unit: "mg/dL" },
+    { name: "Calcio (Ca)", min: 8.5, max: 10.5, unit: "mg/dL" },
+    { name: "Cloro (Cl)", min: 96, max: 106, unit: "mEq/L" },
+    { name: "Fósforo (P)", min: 2.5, max: 4.5, unit: "mg/dL" }
+  ],
+  "Biometría / Coagulación": [
+    { name: "Leucocitos (WBC)", min: 4.5, max: 11, unit: "x10^3/µL" },
+    { name: "Plaquetas", min: 150, max: 450, unit: "x10^3/µL" },
+    { name: "INR (No anticoagulado)", min: 0.8, max: 1.1, unit: "-" }
+  ],
+  "Marcadores de Infección / Inflamación": [
+    { name: "PCR (Proteína C Reactiva)", min: 0, max: 5, unit: "mg/L" },
+    { name: "Procalcitonina", min: 0, max: 0.05, unit: "ng/mL" }
+  ]
+};
+
+const PREGUNTAS_ENTREVISTA = [
+  { id: 'q1', section: 'Bajo prescripción', text: '¿Toma medicamentos por indicación médica?' },
+  { id: 'q2', section: 'Bajo prescripción', text: '¿Hay algún medicamento que haya suspendido/cambiado en el último mes? ¿Motivo?' },
+  { id: 'q3', section: 'Bajo prescripción', text: '¿Ha tomado antibióticos, antivirales o antimicóticos en los últimos 3 meses?' },
+  { id: 'q4', section: 'Sin prescripción', text: '¿Toma algún medicamento que no haya sido recetado?' },
+  { id: 'q5', section: 'Sin prescripción', text: '¿Toma alguna vitamina, suplemento o producto natural?' },
+  { id: 'q6', section: 'Descarte', text: '¿Usted toma Aspirina o anticoagulante?' },
+  { id: 'q7', section: 'Descarte', text: '¿Usted toma Analgésicos?' },
+  { id: 'q8', section: 'Descarte', text: '¿Usted usa Ayuda para la digestión?' },
+  { id: 'q9', section: 'Descarte', text: '¿Usted usa Inhaladores/aerosoles?' }
+];
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+
+const apiFetch = async (path, options = {}) => {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options,
+  });
+
+  const isJson = (res.headers.get('content-type') || '').includes('application/json');
+  const payload = isJson ? await res.json() : null;
+  if (!res.ok) {
+    throw new Error(payload?.error || `Error HTTP ${res.status}`);
+  }
+  return payload;
+};
+
+// --- Funciones de Cálculo Clínico Automáticas ---
+const calculateAge = (dob) => {
+  if (!dob) return { years: '', group: '' };
+  const birthDate = new Date(dob);
+  const today = new Date();
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const m = today.getMonth() - birthDate.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) age--;
+  if (isNaN(age)) return { years: '', group: '' };
+  let group = 'Adulto';
+  if (age === 0) group = 'Neonato/Lactante';
+  else if (age >= 1 && age <= 12) group = 'Pediátrico';
+  else if (age > 12 && age < 18) group = 'Adolescente';
+  else if (age >= 65) group = 'Adulto Mayor';
+  return { years: age, group };
+};
+
+const calculateIMC = (peso, altura) => {
+  if (!peso || !altura) return '';
+  const m = altura / 100;
+  return (peso / (m * m)).toFixed(2);
+};
+
+const calculateSC = (peso, altura) => {
+  if (!peso || !altura) return '';
+  return Math.sqrt((peso * altura) / 3600).toFixed(2);
+};
+
+const calculateIdealWeight = (altura, genero) => {
+  if (!altura || !genero || (genero !== 'Masculino' && genero !== 'Femenino')) return '';
+  const inches = altura / 2.54;
+  if (inches < 60) return '-'; 
+  const base = genero === 'Masculino' ? 50 : 45.5;
+  return (base + 2.3 * (inches - 60)).toFixed(1);
+};
+
+const calculateAdjustedWeight = (peso, pesoIdeal) => {
+  if (!peso || !pesoIdeal || pesoIdeal === '-') return '';
+  return (Number(pesoIdeal) + 0.4 * (Number(peso) - Number(pesoIdeal))).toFixed(1);
+};
+
+const calculateCrCl = (age, weight, gender, creat) => {
+  if (!age || !weight || !creat || creat <= 0 || !gender) return '';
+  let crcl = ((140 - age) * weight) / (72 * creat);
+  if (gender === 'Femenino') crcl *= 0.85;
+  return crcl.toFixed(1);
+};
+
+const getTfgColorClass = (val) => {
+  if (!val) return 'text-blue-700 bg-blue-50 border-blue-200';
+  const num = Number(val);
+  if (num >= 90) return 'text-green-800 bg-green-50 border-green-200'; 
+  if (num >= 60) return 'text-yellow-800 bg-yellow-50 border-yellow-300'; 
+  return 'text-red-800 bg-red-50 border-red-300'; 
+};
+
+const calculateDaysOfUse = (startDate, endDateStr) => {
+  if (!startDate) return 0;
+  const start = new Date(startDate);
+  const end = endDateStr ? new Date(endDateStr) : new Date(); 
+  const diffTime = end - start;
+  const days = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  return days >= 0 ? days : 0;
+};
+
+const formatExcelDate = (isoStr) => {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return isoStr;
+  const pad = (n) => n.toString().padStart(2, '0');
+  const yy = d.getFullYear().toString().slice(-2);
+  return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${yy} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+const exportToCSV = (filename, rows) => {
+  const csvContent = "data:text/csv;charset=utf-8,\uFEFF" 
+    + rows.map(e => e.map(cell => `"${(cell || '').toString().replace(/"/g, '""')}"`).join(",")).join("\n");
+  const encodedUri = encodeURI(csvContent);
+  const link = document.createElement("a");
+  link.setAttribute("href", encodedUri);
+  link.setAttribute("download", filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+};
+
+// --- Estados Iniciales Mock ---
+const initialUsers = [
+  { id: 'u1', username: 'CoordinadorFV', password: 'FarmaFV', role: 'admin', nombre: 'Admin FV', puesto: 'Coordinador', numEmpleado: '001', horario: 'Matutino' },
+  { id: 'u2', username: 'Clinico1', password: '123', role: 'user', nombre: 'Farmacéutico Clínico', puesto: 'Especialista', numEmpleado: '002', horario: 'Vespertino' }
+];
+
+// App limpia y lista para producción sin pacientes de ejemplo
+const initialPatients = [];
+
+// ==========================================
+// COMPONENTE PRINCIPAL (APP)
+// ==========================================
+export default function App() {
+  const [users, setUsers] = useState(initialUsers);
+  const [currentUser, setCurrentUser] = useState(null);
+
+  const [patients, setPatients] = useState(initialPatients);
+  const [activePatientId, setActivePatientId] = useState(null);
+  const [activeTab, setActiveTab] = useState('demographics');
+  const [viewingAdmin, setViewingAdmin] = useState(false);
+  const [showNewPatientModal, setShowNewPatientModal] = useState(false);
+  const [bootstrapping, setBootstrapping] = useState(true);
+  const [syncError, setSyncError] = useState('');
+  const loadedFromDbRef = useRef(false);
+  const patientsSyncTimerRef = useRef(null);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadFromDb = async () => {
+      try {
+        const data = await apiFetch('/api/bootstrap');
+        if (!mounted) return;
+        setUsers(Array.isArray(data?.users) ? data.users : initialUsers);
+        setPatients(Array.isArray(data?.patients) ? data.patients : []);
+        loadedFromDbRef.current = true;
+      } catch (_err) {
+        if (!mounted) return;
+        loadedFromDbRef.current = true;
+      } finally {
+        if (mounted) setBootstrapping(false);
+      }
+    };
+
+    loadFromDb();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!loadedFromDbRef.current) return;
+    apiFetch('/api/sync/users', {
+      method: 'PUT',
+      body: JSON.stringify({ users }),
+    }).catch(() => setSyncError('No se pudo sincronizar usuarios con BD.'));
+  }, [users]);
+
+  useEffect(() => {
+    if (!loadedFromDbRef.current) return;
+    if (patientsSyncTimerRef.current) clearTimeout(patientsSyncTimerRef.current);
+    patientsSyncTimerRef.current = setTimeout(() => {
+      apiFetch('/api/sync/patients', {
+        method: 'PUT',
+        body: JSON.stringify({ patients }),
+      }).catch(() => setSyncError('No se pudo sincronizar pacientes con BD.'));
+    }, 500);
+
+    return () => {
+      if (patientsSyncTimerRef.current) clearTimeout(patientsSyncTimerRef.current);
+    };
+  }, [patients]);
+
+  // --- LÓGICA DE PRESENCIA COLABORATIVA Y NAVEGACIÓN ---
+  const handleEnterPatient = (id, targetTab = 'demographics') => {
+    const p = patients.find(x => x.id === id);
+    if (!p) return;
+    
+    // En lugar de bloquear, nos sumamos al arreglo de usuarios activos en este perfil
+    setPatients(prev => prev.map(x => {
+      if (x.id === id) {
+        const currentUsers = x.activeUsers || [];
+        if (!currentUsers.includes(currentUser.id)) {
+          return { ...x, activeUsers: [...currentUsers, currentUser.id] };
+        }
+      }
+      return x;
+    }));
+    setActivePatientId(id);
+    setActiveTab(targetTab);
+  };
+
+  const handleExitPatient = () => {
+    if (activePatientId) {
+      // Nos retiramos del arreglo de usuarios activos al salir
+      setPatients(prev => prev.map(x => {
+        if (x.id === activePatientId) {
+          return { ...x, activeUsers: (x.activeUsers || []).filter(uid => uid !== currentUser.id) };
+        }
+        return x;
+      }));
+    }
+    setActivePatientId(null);
+  };
+
+  const handleLogoutWithUnlock = () => {
+    handleExitPatient(); 
+    setCurrentUser(null);
+  };
+
+  // --- LOGIN ---
+  if (bootstrapping) {
+    return (
+      <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-xl font-bold">Cargando datos desde BD...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser) return <LoginScreen users={users} onLogin={setCurrentUser} />;
+  // --- ADMIN PANEL ---
+  if (viewingAdmin && currentUser.role === 'admin') return <AdminPanel users={users} setUsers={setUsers} onClose={() => setViewingAdmin(false)} currentUser={currentUser} onLogout={handleLogoutWithUnlock} />;
+
+  // --- APP PRINCIPAL ---
+  const activePatient = patients.find(p => p.id === activePatientId) || null;
+
+  const updatePatient = (updatedData) => {
+    setPatients(prev => prev.map(p => p.id === activePatientId ? { ...p, ...updatedData } : p));
+  };
+
+  const createNewPatientFromModal = (initialData) => {
+    const newId = Date.now().toString();
+    const currentDateLocal = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0,16);
+    const ingresoFinal = initialData.fechaIngreso || currentDateLocal;
+    
+    const newPatient = {
+      id: newId,
+      pacienteBaseId: newId, 
+      deleted: false,
+      activeUsers: [currentUser.id], // Ingresamos directamente como activos
+      demographics: { identificadorInterno: initialData.identificadorInterno || '', numeroPaciente: initialData.numeroPaciente || '', numeroEpisodio: '', nombre: initialData.nombre || '', fechaNacimiento: initialData.fechaNacimiento || '', peso: '', altura: '', ingreso: ingresoFinal, egreso: '', tipoPaciente: '', especialidad: '', toxicomania: '', alcoholismo: '', observacionesGenerales: '' },
+      labs: {}, interview: {}, conciliacion: { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false }, 
+      perfilFarmacoMeta: { evaluadoPrevioPrimeraDosis: false },
+      perfilFarmaco: [], solucionesIV: [], prms: [], interacciones: [], ram: [], microbiologia: []
+    };
+    setPatients([...patients, newPatient]);
+    setActivePatientId(newId);
+    setActiveTab('demographics');
+    setShowNewPatientModal(false);
+  };
+
+  const handleCreateReingresoFromModal = (basePatientMatch) => {
+    const baseId = basePatientMatch.pacienteBaseId || basePatientMatch.id;
+    const newId = Date.now().toString();
+    const currentDateLocal = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0,16);
+
+    const newReingreso = {
+        id: newId,
+        pacienteBaseId: baseId,
+        deleted: false,
+        activeUsers: [currentUser.id],
+        demographics: {
+            ...basePatientMatch.demographics,
+            numeroEpisodio: '', 
+            ingreso: currentDateLocal,
+            egreso: '',
+            motivoIngreso: '',
+            diagnosticoPrincipal: '',
+            habitacion: '',
+            medico: '',
+            tipoPaciente: '',
+            especialidad: '',
+            observacionesGenerales: ''
+        },
+        labs: {}, interview: {}, conciliacion: { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false },
+        perfilFarmacoMeta: { evaluadoPrevioPrimeraDosis: false },
+        perfilFarmaco: [], solucionesIV: [], prms: [], interacciones: [], ram: [], microbiologia: []
+    };
+    setPatients([...patients, newReingreso]);
+    setActivePatientId(newReingreso.id);
+    setActiveTab('demographics');
+    setShowNewPatientModal(false);
+  };
+
+  const handleCreateReingreso = () => {
+    if (!activePatient) return;
+    handleExitPatient(); 
+    handleCreateReingresoFromModal(activePatient);
+  };
+
+  const moveToTrash = (id) => { setPatients(prev => prev.map(p => p.id === id ? { ...p, deleted: true } : p)); if (activePatientId === id) handleExitPatient(); };
+  const restorePatient = (id) => setPatients(prev => prev.map(p => p.id === id ? { ...p, deleted: false } : p));
+  
+  // Eliminación permanente segura 
+  const permanentlyDelete = (id) => { 
+     const pToDelete = patients.find(p => p.id === id);
+     const baseId = pToDelete?.pacienteBaseId || pToDelete?.id;
+
+     setPatients(prev => prev.filter(p => p.id !== id));
+     
+     if (activePatientId === id) {
+       handleExitPatient();
+       const others = patients.filter(p => p.id !== id && !p.deleted && (p.pacienteBaseId || p.id) === baseId);
+       if (others.length > 0) handleEnterPatient(others[0].id);
+     }
+  };
+
+  if (!activePatientId) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex flex-col relative">
+        <TopBar currentUser={currentUser} onLogout={handleLogoutWithUnlock} onAdmin={() => setViewingAdmin(true)} />
+        {syncError && <div className="mx-8 mt-4 bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded text-sm">{syncError}</div>}
+        <Dashboard 
+           patients={patients} 
+           onSelect={handleEnterPatient} 
+           onCreate={() => setShowNewPatientModal(true)} 
+           onDelete={moveToTrash} 
+           onRestore={restorePatient} 
+           onHardDelete={permanentlyDelete} 
+           currentUser={currentUser} 
+           users={users} 
+        />
+        
+        {/* MODAL NUEVO PACIENTE */}
+        {showNewPatientModal && (
+           <NewPatientModal 
+              patients={patients} 
+              onClose={() => setShowNewPatientModal(false)} 
+              onCreateNew={createNewPatientFromModal} 
+              onCreateReingreso={handleCreateReingresoFromModal} 
+           />
+        )}
+      </div>
+    );
+  }
+
+  const { years: edad, group: grupoEtario } = calculateAge(activePatient.demographics.fechaNacimiento);
+  const handlePrint = () => window.print();
+
+  // Buscar historial de episodios para el sidebar
+  const baseId = activePatient.pacienteBaseId || activePatient.id;
+  const episodiosDelPaciente = patients.filter(p => !p.deleted && (p.pacienteBaseId || p.id) === baseId).sort((a,b) => new Date(a.demographics.ingreso) - new Date(b.demographics.ingreso));
+
+  const handleExportPatientCSV = () => {
+    const p = activePatient;
+    const rows = [
+      ["REPORTE INDIVIDUAL DE PACIENTE", p.demographics.nombre],
+      ["ID Interno (FV)", p.demographics.identificadorInterno, "No. Paciente", p.demographics.numeroPaciente, "No. Episodio", p.demographics.numeroEpisodio],
+      ["Habitación", p.demographics.habitacion, "Edad", edad, "Género", p.demographics.genero],
+      ["Diagnóstico", p.demographics.diagnosticoPrincipal, "Ingreso", formatExcelDate(p.demographics.ingreso), "Egreso", formatExcelDate(p.demographics.egreso)],
+      ["Tipo de Paciente", p.demographics.tipoPaciente, "Especialidad", p.demographics.especialidad],
+      ["Observaciones", p.demographics.observacionesGenerales],
+      [],
+      ["ESTADO DE CONCILIACIÓN"],
+      ["Ingreso", p.conciliacion.ingresoNA ? "No Aplica" : (p.conciliacion.ingreso.length > 0 ? "Realizada" : "Pendiente")],
+      ["Transición (Área)", p.conciliacion.transicionAreaNA ? "No Aplica" : (p.conciliacion.transicionesArea?.length > 0 ? "Realizada" : "Pendiente")],
+      ["Transición (Médico)", p.conciliacion.transicionMedicoNA ? "No Aplica" : (p.conciliacion.transicionMedico ? "Realizada" : "Pendiente")],
+      ["Egreso", p.conciliacion.egresoNA ? "No Aplica" : (p.conciliacion.egreso.length > 0 ? "Realizada" : "Pendiente")],
+      [],
+      ["PERFIL FARMACOTERAPÉUTICO (Validación Previa 1ra Dosis: " + (p.perfilFarmacoMeta?.evaluadoPrevioPrimeraDosis ? 'SI' : 'NO') + ")"],
+      ["Categoría", "Principio", "Marca Comercial", "Dosis", "Vía", "Frecuencia", "F. Inicio", "Días", "Idoneidad", "Estado", "F. Suspensión"]
+    ];
+    p.perfilFarmaco.forEach(f => {
+      const d = calculateDaysOfUse(f.fechaInicio, f.estado === 'Suspendido' ? f.fechaSuspension : p.demographics.egreso);
+      rows.push([f.categoria, f.principio, f.marcaComercial || '', f.dosis, f.via, f.frecuencia, f.fechaInicio, d, f.idoneidad, f.estado, f.fechaSuspension]);
+    });
+
+    rows.push([], ["SOLUCIONES INTRAVENOSAS"]);
+    rows.push(["Solución", "Volumen (mL)", "Tiempo (hr)", "Velocidad (mL/hr)", "Frecuencia", "F. Inicio", "Días", "Estado", "F. Suspensión"]);
+    (p.solucionesIV || []).forEach(s => {
+      const d = calculateDaysOfUse(s.fechaInicio, s.estado === 'Suspendido' ? s.fechaSuspension : p.demographics.egreso);
+      rows.push([s.solucion, s.volumen, s.tiempo, s.velocidad, s.frecuencia, s.fechaInicio, d, s.estado, s.fechaSuspension]);
+    });
+    
+    rows.push([], ["PROBLEMAS RELACIONADOS CON MEDICAMENTOS (PRM)"]);
+    rows.push(["Fecha", "Área", "Medicamento", "Vía", "Grupo", "Descripción PRM", "Categoría", "Análisis", "Causa Raíz", "Intervención", "Desc. Intervención", "Aceptación", "Resolución", "Gravedad", "Reportado Calidad"]);
+    (p.prms || []).forEach(i => rows.push([i.fecha, i.area, i.medicamento, i.via, i.grupo, i.descripcion, i.categoria, i.analisis, i.causaRaiz, i.intervencion, i.descIntervencion, i.aceptacion, i.resolucion, i.gravedad, i.reportadoCalidad]));
+
+    rows.push([], ["INTERACCIONES MEDICAMENTOSAS"]);
+    rows.push(["Fecha", "Medicamentos Involucrados", "Grado de Interacción", "Consecuencias"]);
+    (p.interacciones || []).forEach(i => rows.push([i.fecha, i.medicamentos, i.grado, i.consecuencia]));
+
+    rows.push([], ["MICROBIOLOGÍA"]);
+    rows.push(["Fecha", "Muestra", "Sitio", "Microorganismo", "Sensibles", "Resistentes"]);
+    p.microbiologia.forEach(m => rows.push([m.fechaMuestra, m.tipoMuestra, m.sitioCultivo, m.microorganismo, m.sensibles, m.resistentes]));
+
+    rows.push([], ["REACCIONES ADVERSAS (RAM)"]);
+    rows.push(["Fecha", "Medicamento", "Severidad", "Que pasó", "Intervención"]);
+    p.ram.forEach(r => rows.push([r.fecha, r.medicamento, r.severidad, r.quePaso, r.queSeHizo]));
+
+    exportToCSV(`Paciente_${p.demographics.nombre.replace(/\s+/g, '_')}.csv`, rows);
+  };
+
+  const diasEstancia = calculateDaysOfUse(activePatient.demographics.ingreso, activePatient.demographics.egreso);
+
+  // Lógica para detectar presencia de otros usuarios en ESTE perfil específico
+  const otherActiveUserIds = (activePatient.activeUsers || []).filter(uid => uid !== currentUser.id);
+  const otherActiveNames = otherActiveUserIds.map(uid => users.find(u => u.id === uid)?.nombre).join(', ');
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans text-slate-800 print:bg-white relative">
+      <TopBar currentUser={currentUser} onLogout={handleLogoutWithUnlock} onAdmin={() => setViewingAdmin(true)} isPatientView={true} onBack={handleExitPatient} />
+      {syncError && <div className="mx-6 mt-3 bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded text-sm print:hidden">{syncError}</div>}
+      
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+        {/* Sidebar Interactivo */}
+        <div className="w-full md:w-64 bg-white border-r border-slate-200 flex flex-col shadow-sm print:hidden z-10 overflow-y-auto">
+          <div className="p-4 border-b border-slate-200">
+            <h2 className="font-bold text-lg truncate text-blue-800" title={activePatient.demographics.nombre || 'Sin Nombre'}>{activePatient.demographics.nombre || 'Nuevo Paciente'}</h2>
+            <div className="text-xs text-slate-500 mt-1 space-y-1">
+              <p>Exp: <strong>{activePatient.demographics.numeroPaciente || '-'}</strong> | FV: <strong>{activePatient.demographics.identificadorInterno || '-'}</strong></p>
+              <p>Hab: {activePatient.demographics.habitacion || '-'} | Edad: {edad ? `${edad} a. (${grupoEtario})` : '-'}</p>
+              <p className="font-medium text-slate-700 bg-slate-100 inline-block px-2 py-0.5 rounded">Estancia: {diasEstancia} días</p>
+            </div>
+            {activePatient.demographics.egreso && <span className="mt-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">Egresado ({formatExcelDate(activePatient.demographics.egreso)})</span>}
+          </div>
+
+          {/* Historial de Episodios */}
+          {episodiosDelPaciente.length > 0 && activePatient.demographics.nombre && (
+            <div className="p-4 border-b border-slate-200 bg-slate-50">
+               <div className="flex justify-between items-center mb-2">
+                 <h3 className="text-xs font-bold text-slate-500 uppercase flex items-center"><Layers className="w-3 h-3 mr-1"/> Historial / Episodios</h3>
+                 <button onClick={handleCreateReingreso} className="text-[10px] bg-blue-600 text-white px-2 py-1 rounded font-bold hover:bg-blue-700 transition" title="Crear un nuevo episodio de hospitalización para este paciente">+ Reingreso</button>
+               </div>
+               <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                  {episodiosDelPaciente.map((ep, i) => {
+                      const epOtherActive = (ep.activeUsers || []).filter(uid => uid !== currentUser.id);
+                      const hasOthersInEp = epOtherActive.length > 0;
+
+                      return (
+                      <div key={ep.id} className={`w-full flex items-center px-2 py-1.5 text-xs rounded border transition-colors ${ep.id === activePatient.id ? 'bg-blue-100 border-blue-300 shadow-inner' : 'bg-white border-slate-200 hover:bg-slate-100 shadow-sm'}`}>
+                         <button 
+                            onClick={() => {
+                               handleExitPatient();
+                               handleEnterPatient(ep.id, activeTab);
+                            }} 
+                            className={`flex-1 text-left ${ep.id === activePatient.id ? 'text-blue-800 font-bold' : 'text-slate-600'}`}
+                         >
+                           <div className="flex justify-between items-center">
+                             <span className="truncate max-w-[100px] flex items-center">
+                                {hasOthersInEp && <Users className="w-3 h-3 text-blue-500 mr-1" title="Otros usuarios editando" />}
+                                Ep. {i+1} {ep.demographics.numeroEpisodio ? `(${ep.demographics.numeroEpisodio})` : ''}
+                             </span>
+                             <span className={`text-[9px] px-1 py-0.5 rounded ${ep.demographics.egreso ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{ep.demographics.egreso ? 'Alta' : 'Activo'}</span>
+                           </div>
+                           <div className="text-[10px] text-slate-500 mt-1">{formatExcelDate(ep.demographics.ingreso).split(' ')[0]}</div>
+                         </button>
+                         {/* Botón para eliminar perfil de reingreso */}
+                         {episodiosDelPaciente.length > 1 && (
+                            <button onClick={(e) => { e.stopPropagation(); if(window.confirm("¿Seguro que deseas eliminar permanentemente este episodio?")) permanentlyDelete(ep.id); }} className={`ml-2 p-1 rounded transition-colors text-slate-400 hover:text-red-600 hover:bg-red-50`} title={'Eliminar este episodio'}>
+                               <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                         )}
+                      </div>
+                  )})}
+               </div>
+            </div>
+          )}
+
+          <nav className="flex-1 p-2 space-y-1">
+            <TabButton icon={<Users />} label="Perfil General" isActive={activeTab === 'demographics'} onClick={() => setActiveTab('demographics')} />
+            <TabButton icon={<ClipboardList />} label="Entrevista y Conciliación" isActive={activeTab === 'conciliation'} onClick={() => setActiveTab('conciliation')} />
+            <TabButton icon={<Pill />} label="Perfil Farmacoterapéutico" isActive={activeTab === 'pharmacotherapy'} onClick={() => setActiveTab('pharmacotherapy')} />
+            <TabButton icon={<FileWarning />} label="Interacciones y PRM" isActive={activeTab === 'prm'} onClick={() => setActiveTab('prm')} />
+            <TabButton icon={<Activity />} label="Laboratorios (y TFG)" isActive={activeTab === 'labs'} onClick={() => setActiveTab('labs')} />
+            <TabButton icon={<Microscope />} label="Microbiología" isActive={activeTab === 'micro'} onClick={() => setActiveTab('micro')} />
+            <TabButton icon={<ShieldAlert />} label="Reacciones Adversas" isActive={activeTab === 'ram'} onClick={() => setActiveTab('ram')} />
+          </nav>
+          
+          <div className="p-4 border-t border-slate-200 space-y-2 bg-slate-50">
+            <button onClick={handleExportPatientCSV} className="w-full flex items-center justify-center px-3 py-2 bg-green-50 text-green-700 border border-green-200 rounded-md text-sm font-medium hover:bg-green-100 transition-colors"><FileSpreadsheet className="w-4 h-4 mr-2" /> Exportar CSV</button>
+            <button onClick={handlePrint} className="w-full flex items-center justify-center px-3 py-2 bg-white text-slate-700 border border-slate-300 rounded-md text-sm font-medium hover:bg-slate-100 transition-colors"><Printer className="w-4 h-4 mr-2" /> Imprimir / PDF General</button>
+          </div>
+        </div>
+
+        {/* Área Principal Interactiva */}
+        <div className="flex-1 overflow-auto p-4 md:p-8 bg-slate-100 print:hidden">
+          <div className="max-w-6xl mx-auto bg-white rounded-xl shadow-sm border border-slate-200 p-6 relative">
+            
+            {/* INDICADOR DE EDICIÓN COLABORATIVA EN TIEMPO REAL */}
+            {otherActiveUserIds.length > 0 ? (
+               <div className="absolute top-0 right-0 bg-amber-100 text-amber-800 border-l border-b border-amber-200 px-4 py-1.5 text-xs font-bold rounded-bl-xl rounded-tr-xl flex items-center shadow-sm">
+                  <div className="relative flex h-3 w-3 mr-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
+                  </div>
+                  Editando simultáneamente con: <span className="ml-1 text-amber-900 underline">{otherActiveNames}</span>
+               </div>
+            ) : (
+               <div className="absolute top-0 right-0 bg-green-50 text-green-700 border-l border-b border-green-100 px-3 py-1 text-xs font-bold rounded-bl-xl rounded-tr-xl flex items-center">
+                  <CheckCircle className="w-3 h-3 mr-1" /> Solo tú estás editando este expediente.
+               </div>
+            )}
+
+            {activeTab === 'demographics' && <DemographicsTab patient={activePatient} updatePatient={updatePatient} allPatients={patients} />}
+            {activeTab === 'conciliation' && <ConciliationTab patient={activePatient} updatePatient={updatePatient} />}
+            {activeTab === 'pharmacotherapy' && <PharmacotherapyTab patient={activePatient} updatePatient={updatePatient} />}
+            {activeTab === 'prm' && <PrmTab patient={activePatient} updatePatient={updatePatient} />}
+            {activeTab === 'labs' && <LabsTab patient={activePatient} updatePatient={updatePatient} />}
+            {activeTab === 'micro' && <MicrobiologyTab patient={activePatient} updatePatient={updatePatient} />}
+            {activeTab === 'ram' && <RamTab patient={activePatient} updatePatient={updatePatient} />}
+          </div>
+        </div>
+
+        {/* --- VISTA DE IMPRESIÓN (Oculta en UI, visible al Imprimir PDF) --- */}
+        <div className="hidden print:block print:w-full print:bg-white print:p-8 space-y-12">
+          <div className="border-b-2 border-slate-800 pb-4 mb-8">
+            <h1 className="text-3xl font-black text-slate-800 uppercase tracking-wider">Expediente Clínico Farmacoterapéutico</h1>
+            <div className="grid grid-cols-3 mt-4 text-sm text-slate-700">
+              <p><strong>Paciente:</strong> {activePatient.demographics.nombre}</p>
+              <p><strong>ID Interno:</strong> {activePatient.demographics.identificadorInterno} | <strong>Exp:</strong> {activePatient.demographics.numeroPaciente}</p>
+              <p><strong>Fecha Impresión:</strong> {new Date().toLocaleDateString()}</p>
+            </div>
+          </div>
+          
+          <div className="print-section"><DemographicsTab patient={activePatient} updatePatient={()=>{}} allPatients={[]} /></div>
+          <div className="print-section break-before-page"><ConciliationTab patient={activePatient} updatePatient={()=>{}} /></div>
+          <div className="print-section break-before-page"><PharmacotherapyTab patient={activePatient} updatePatient={()=>{}} /></div>
+          <div className="print-section break-before-page"><PrmTab patient={activePatient} updatePatient={()=>{}} /></div>
+          <div className="print-section break-before-page"><LabsTab patient={activePatient} updatePatient={()=>{}} /></div>
+          <div className="print-section break-before-page"><MicrobiologyTab patient={activePatient} updatePatient={()=>{}} /></div>
+          <div className="print-section"><RamTab patient={activePatient} updatePatient={()=>{}} /></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// MODAL: FORMULARIO RÁPIDO Y DETECCIÓN DUPLICADOS CON PREVIEW
+// ==========================================
+function NewPatientModal({ patients, onClose, onCreateNew, onCreateReingreso }) {
+  const [formData, setFormData] = useState(() => {
+    const currentDateLocal = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0,16);
+    return { nombre: '', fechaNacimiento: '', numeroPaciente: '', identificadorInterno: '', fechaIngreso: currentDateLocal };
+  });
+
+  // Lógica de Autogeneración de Identificador Interno (FV-MMYY-CONSECUTIVO)
+  useEffect(() => {
+    if (!formData.fechaIngreso) return;
+    const d = new Date(formData.fechaIngreso);
+    if (isNaN(d.getTime())) return;
+    
+    const yy = d.getFullYear().toString().slice(-2);
+    const mm = (d.getMonth() + 1).toString().padStart(2, '0');
+    const prefix = `FV-${mm}${yy}-`;
+    
+    // Encontrar pacientes (incluyendo eliminados) con este prefijo para mantener el consecutivo histórico
+    const matchingPatients = patients.filter(p => p.demographics.identificadorInterno && p.demographics.identificadorInterno.startsWith(prefix));
+    
+    let maxConsecutive = 0;
+    matchingPatients.forEach(p => {
+      const parts = p.demographics.identificadorInterno.split('-');
+      if (parts.length === 3) {
+        const num = parseInt(parts[2], 10);
+        if (!isNaN(num) && num > maxConsecutive) {
+          maxConsecutive = num;
+        }
+      }
+    });
+    
+    const nextNum = (maxConsecutive + 1).toString().padStart(3, '0');
+    const newIdFV = `${prefix}${nextNum}`;
+    
+    if (formData.identificadorInterno !== newIdFV) {
+      setFormData(prev => ({ ...prev, identificadorInterno: newIdFV }));
+    }
+  }, [formData.fechaIngreso, patients]);
+
+  // Detección en tiempo real (Sólo por Nombre + Fecha Nacimiento)
+  const duplicateMatch = useMemo(() => {
+    return patients.find(p => {
+      if (p.deleted) return false;
+      const hasName = p.demographics.nombre && formData.nombre && p.demographics.nombre.trim().length > 3;
+      const sameName = hasName && p.demographics.nombre.toLowerCase().trim() === formData.nombre.toLowerCase().trim();
+      const hasDob = p.demographics.fechaNacimiento && formData.fechaNacimiento;
+      const sameDob = hasDob && p.demographics.fechaNacimiento === formData.fechaNacimiento;
+      
+      return sameName && sameDob;
+    });
+  }, [formData, patients]);
+
+  // Recolectar todos los episodios previos del paciente detectado para el "Preview"
+  const duplicateEpisodes = useMemo(() => {
+    if (!duplicateMatch) return [];
+    const baseId = duplicateMatch.pacienteBaseId || duplicateMatch.id;
+    return patients
+      .filter(p => !p.deleted && (p.pacienteBaseId || p.id) === baseId)
+      .sort((a, b) => new Date(b.demographics.ingreso) - new Date(a.demographics.ingreso)); // El más reciente primero
+  }, [duplicateMatch, patients]);
+
+  return (
+    <div className="fixed inset-0 bg-slate-900 bg-opacity-50 flex items-center justify-center z-50 p-4">
+       <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden flex flex-col max-h-[90vh]">
+          <div className="bg-blue-600 p-4 text-white flex justify-between items-center shrink-0">
+             <h2 className="font-bold flex items-center"><UserPlus className="w-5 h-5 mr-2" /> Iniciar Nuevo Expediente</h2>
+             <button onClick={onClose} className="text-blue-200 hover:text-white"><X className="w-5 h-5"/></button>
+          </div>
+          <div className="p-6 space-y-4 overflow-y-auto flex-1">
+             <p className="text-sm text-slate-500 mb-2">Ingresa los datos base para validar en el sistema:</p>
+             <FormInput label="Nombre Completo" value={formData.nombre} onChange={e => setFormData({...formData, nombre: e.target.value})} placeholder="Ej. Juan Pérez García" />
+             <FormInput label="Fecha de Nacimiento" type="date" value={formData.fechaNacimiento} onChange={e => setFormData({...formData, fechaNacimiento: e.target.value})} />
+             <FormInput label="Fecha y Hora de Ingreso" type="datetime-local" value={formData.fechaIngreso} onChange={e => setFormData({...formData, fechaIngreso: e.target.value})} />
+             
+             <div className="grid grid-cols-2 gap-4">
+               <FormInput label="N° Paciente (Expediente)" value={formData.numeroPaciente} onChange={e => setFormData({...formData, numeroPaciente: e.target.value})} placeholder="Ej. PAC-001" />
+               <div className="flex flex-col">
+                  <label className="text-sm font-semibold text-slate-600 mb-1 truncate">Identificador Interno (FV)</label>
+                  <input type="text" readOnly value={formData.identificadorInterno} className="border-slate-300 rounded-md shadow-sm sm:text-sm px-3 py-2 bg-slate-100 text-slate-500 font-mono border cursor-not-allowed" title="Generado automáticamente por el sistema" />
+               </div>
+             </div>
+
+             {/* ALERTA DE DUPLICIDAD CON HISTORIAL PREVIO Y DOBLE OPCIÓN */}
+             {duplicateMatch && (
+               <div className="mt-4 bg-amber-50 border border-amber-200 p-4 rounded-lg shadow-sm">
+                 <h4 className="font-bold text-amber-800 flex items-center mb-1"><AlertTriangle className="w-5 h-5 mr-2" /> ¡Atención! Paciente Existente</h4>
+                 <p className="text-sm text-amber-700 mb-3">Se encontró un registro para <strong>{duplicateMatch.demographics.nombre}</strong>. Revisa su historial previo de hospitalizaciones:</p>
+                 
+                 {/* PREVIEW DE HISTORIAL */}
+                 <div className="max-h-40 overflow-y-auto mb-4 space-y-2 pr-1 custom-scrollbar">
+                   {duplicateEpisodes.map((ep, idx) => {
+                     const isActivo = !ep.demographics.egreso;
+                     return (
+                       <div key={ep.id} className={`bg-white p-3 rounded-md border ${isActivo ? 'border-red-300 shadow-sm' : 'border-amber-100'} text-xs relative`}>
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="font-bold text-slate-700 flex items-center">
+                              <History className="w-3 h-3 mr-1 text-slate-400" />
+                              Episodio {duplicateEpisodes.length - idx} {ep.demographics.numeroEpisodio ? `(${ep.demographics.numeroEpisodio})` : ''}
+                            </span>
+                            {isActivo && <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold text-[9px] uppercase tracking-wider">Activo Actual</span>}
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-2 text-slate-600 mt-2">
+                            <div><span className="font-semibold">Ingreso:</span> {formatExcelDate(ep.demographics.ingreso).split(' ')[0]}</div>
+                            <div><span className="font-semibold">Egreso:</span> {ep.demographics.egreso ? formatExcelDate(ep.demographics.egreso).split(' ')[0] : '-'}</div>
+                          </div>
+                          
+                          {ep.demographics.diagnosticoPrincipal && (
+                            <div className="text-slate-500 mt-2 border-t border-slate-100 pt-1 truncate">
+                              <span className="font-semibold">Dx:</span> {ep.demographics.diagnosticoPrincipal}
+                            </div>
+                          )}
+                       </div>
+                     );
+                   })}
+                 </div>
+
+                 {duplicateEpisodes.some(ep => !ep.demographics.egreso) && (
+                    <p className="text-xs text-red-600 font-bold mb-3 flex items-center">
+                      <AlertTriangle className="w-4 h-4 mr-1" /> El paciente tiene un episodio de hospitalización actualmente activo.
+                    </p>
+                 )}
+
+                 {/* DOBLE BOTÓN DE DECISIÓN */}
+                 <div className="flex flex-col sm:flex-row gap-2 mt-4">
+                    <button onClick={() => onCreateReingreso(duplicateMatch)} className="flex-1 bg-amber-600 hover:bg-amber-700 text-white py-2 px-3 rounded-md font-bold shadow transition flex items-center justify-center text-sm">
+                       <Layers className="w-4 h-4 mr-2" /> Agregar como Reingreso
+                    </button>
+                    <button onClick={() => onCreateNew(formData)} className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 py-2 px-3 rounded-md font-bold shadow-sm transition flex items-center justify-center text-sm">
+                       <UserPlus className="w-4 h-4 mr-2" /> Crear Perfil Nuevo
+                    </button>
+                 </div>
+               </div>
+             )}
+
+             {!duplicateMatch && (
+               <button onClick={() => onCreateNew(formData)} className="mt-6 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-lg shadow transition-colors flex items-center justify-center">
+                  Crear Nuevo Perfil
+               </button>
+             )}
+          </div>
+       </div>
+    </div>
+  );
+}
+
+
+// ==========================================
+// COMPONENTES GLOBALES (Auth, Nav, Dashboard)
+// ==========================================
+
+function LoginScreen({ users, onLogin }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+
+    try {
+      const payload = await apiFetch('/api/login', {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      });
+      onLogin(payload.user);
+      return;
+    } catch (_err) {
+      const fallbackUser = users.find(u => u.username === username && u.password === password);
+      if (fallbackUser) {
+        onLogin(fallbackUser);
+        return;
+      }
+      setError('Credenciales incorrectas o usuario no existe.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-800 flex items-center justify-center p-4">
+      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8">
+        <div className="flex justify-center mb-6">
+          <div className="bg-blue-100 p-4 rounded-full text-blue-700"><ShieldCheck className="w-12 h-12" /></div>
+        </div>
+        <h1 className="text-2xl font-bold text-center text-slate-800 mb-2">HIS Farmacia Clínica</h1>
+        <p className="text-center text-slate-500 mb-8 text-sm">Sistema de Gestión Farmacoterapéutica</p>
+        
+        {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 border border-red-200">{error}</div>}
+        
+        <form onSubmit={handleLogin} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Usuario</label>
+            <input type="text" value={username} onChange={e => setUsername(e.target.value)} className="w-full border-slate-300 rounded-lg shadow-sm focus:ring-blue-500 px-4 py-2" required />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Contraseña</label>
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full border-slate-300 rounded-lg shadow-sm focus:ring-blue-500 px-4 py-2" required />
+          </div>
+          <button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center transition-colors disabled:opacity-70">
+            <Lock className="w-5 h-5 mr-2" /> {loading ? 'Validando...' : 'Iniciar Sesión'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function TopBar({ currentUser, onLogout, onAdmin, isPatientView, onBack }) {
+  return (
+    <div className="bg-slate-900 text-white px-6 py-3 flex justify-between items-center shadow-md print:hidden z-20">
+      <div className="flex items-center space-x-4">
+        {isPatientView && (
+          <button onClick={onBack} className="text-slate-300 hover:text-white flex items-center text-sm font-medium transition-colors mr-2">
+            <ArrowLeft className="w-5 h-5 mr-1" /> Dashboard
+          </button>
+        )}
+        <div className="flex items-center">
+          <ShieldCheck className="w-6 h-6 text-blue-400 mr-2" />
+          <span className="font-bold text-lg tracking-wide hidden md:block">Farmacia Clínica</span>
+        </div>
+      </div>
+      <div className="flex items-center space-x-6 text-sm">
+        <div className="text-right hidden md:block">
+          <p className="font-semibold text-slate-100">{currentUser.nombre}</p>
+          <p className="text-xs text-slate-400">{currentUser.puesto} | {currentUser.role.toUpperCase()}</p>
+        </div>
+        <div className="flex items-center space-x-2 border-l border-slate-700 pl-4">
+          {currentUser.role === 'admin' && !isPatientView && (
+            <button onClick={onAdmin} className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-full transition" title="Administrar Usuarios"><UserCog className="w-5 h-5" /></button>
+          )}
+          <button onClick={onLogout} className="p-2 text-slate-300 hover:text-red-400 hover:bg-slate-800 rounded-full transition" title="Cerrar Sesión"><LogOut className="w-5 h-5" /></button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminPanel({ users, setUsers, onClose, currentUser, onLogout }) {
+  const [editingId, setEditingId] = useState(null);
+  const [formData, setFormData] = useState({ username: '', password: '', role: 'user', nombre: '', puesto: '', numEmpleado: '', horario: '' });
+
+  const handleSave = () => {
+    if (editingId) {
+      setUsers(users.map(u => u.id === editingId ? { ...formData, id: editingId } : u));
+    } else {
+      setUsers([...users, { ...formData, id: Date.now().toString() }]);
+    }
+    setFormData({ username: '', password: '', role: 'user', nombre: '', puesto: '', numEmpleado: '', horario: '' });
+    setEditingId(null);
+  };
+
+  const handleEdit = (u) => { setFormData(u); setEditingId(u.id); };
+  const handleDelete = (id) => { if (id !== currentUser.id) setUsers(users.filter(u => u.id !== id)); };
+
+  return (
+    <div className="min-h-screen bg-slate-100 flex flex-col">
+      <TopBar currentUser={currentUser} onLogout={onLogout} isPatientView={true} onBack={onClose} />
+      <div className="flex-1 p-8">
+        <div className="max-w-5xl mx-auto">
+          <h1 className="text-3xl font-bold text-slate-800 mb-6">Administración de Usuarios</h1>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 col-span-1">
+              <h2 className="text-xl font-bold text-slate-800 mb-4">{editingId ? 'Editar Usuario' : 'Nuevo Usuario'}</h2>
+              <div className="space-y-4">
+                <FormInput label="Nombre Completo" value={formData.nombre} onChange={e => setFormData({...formData, nombre: e.target.value})} />
+                <div className="grid grid-cols-2 gap-4">
+                  <FormInput label="Usuario (Login)" value={formData.username} onChange={e => setFormData({...formData, username: e.target.value})} />
+                  <FormInput label="Contraseña" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} />
+                </div>
+                <FormSelect label="Rol de Sistema" value={formData.role} onChange={e => setFormData({...formData, role: e.target.value})} options={['user', 'admin']} />
+                <FormInput label="Puesto Clínico" value={formData.puesto} onChange={e => setFormData({...formData, puesto: e.target.value})} />
+                <div className="grid grid-cols-2 gap-4">
+                  <FormInput label="No. Empleado" value={formData.numEmpleado} onChange={e => setFormData({...formData, numEmpleado: e.target.value})} />
+                  <FormSelect label="Horario" value={formData.horario} onChange={e => setFormData({...formData, horario: e.target.value})} options={['Matutino', 'Vespertino', 'Nocturno', 'Fin de Semana']} />
+                </div>
+                <button onClick={handleSave} className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors">
+                  {editingId ? 'Actualizar Usuario' : 'Crear Usuario'}
+                </button>
+                {editingId && <button onClick={() => {setEditingId(null); setFormData({ username: '', password: '', role: 'user', nombre: '', puesto: '', numEmpleado: '', horario: '' });}} className="w-full mt-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2 px-4 rounded-lg transition-colors">Cancelar</button>}
+              </div>
+            </div>
+            <div className="bg-white p-0 rounded-xl shadow-sm border border-slate-200 col-span-2 overflow-hidden">
+              <table className="min-w-full text-sm border-collapse">
+                <thead className="bg-slate-50 border-b">
+                  <tr>
+                    <th className="p-4 text-left font-semibold">Nombre y Puesto</th>
+                    <th className="p-4 text-left font-semibold">Usuario (Rol)</th>
+                    <th className="p-4 text-left font-semibold">Horario</th>
+                    <th className="p-4 text-center font-semibold">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map(u => (
+                    <tr key={u.id} className="border-b hover:bg-slate-50">
+                      <td className="p-4"><p className="font-bold text-slate-800">{u.nombre}</p><p className="text-xs text-slate-500">{u.puesto} | Emp: {u.numEmpleado}</p></td>
+                      <td className="p-4"><p className="font-medium text-blue-600">{u.username}</p><span className={`text-xs px-2 py-0.5 rounded-full ${u.role==='admin'?'bg-purple-100 text-purple-800':'bg-slate-100 text-slate-600'}`}>{u.role}</span></td>
+                      <td className="p-4 text-slate-600">{u.horario}</td>
+                      <td className="p-4 flex justify-center space-x-2">
+                        <button onClick={() => handleEdit(u)} className="text-blue-500 hover:bg-blue-50 p-2 rounded"><Settings className="w-4 h-4"/></button>
+                        {u.id !== currentUser.id && <button onClick={() => handleDelete(u.id)} className="text-red-500 hover:bg-red-50 p-2 rounded"><Trash2 className="w-4 h-4"/></button>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Helper para visualización en Dashboard Calidad
+const StatusBadge = ({ done, isNA }) => {
+  if (isNA) return <span className="px-2 py-1 bg-slate-100 text-slate-500 rounded text-xs font-bold border border-slate-200">N/A</span>;
+  if (done) return <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs font-bold flex items-center justify-center w-max mx-auto border border-green-200"><CheckCircle className="w-3 h-3 mr-1"/> Realizada</span>;
+  return <span className="px-2 py-1 bg-red-50 text-red-600 rounded text-xs font-bold flex items-center justify-center w-max mx-auto border border-red-200"><XCircle className="w-3 h-3 mr-1"/> Pendiente</span>;
+}
+
+function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDelete, currentUser, users }) {
+  const [dashboardTab, setDashboardTab] = useState('pacientes'); 
+  const [view, setView] = useState('activos'); 
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterMonth, setFilterMonth] = useState('');
+  const [filterYear, setFilterYear] = useState('');
+
+  // PRM Filters
+  const [filterPrmCategory, setFilterPrmCategory] = useState('');
+  const [filterPrmGravity, setFilterPrmGravity] = useState('');
+
+  // Lógica de Filtros y Vistas General
+  const filteredPatients = patients.filter(p => {
+    if (view === 'papelera') {
+      if (!p.deleted) return false;
+    } else {
+      if (p.deleted) return false;
+      if (view === 'activos' && p.demographics.egreso) return false;
+      if (view === 'egresados' && !p.demographics.egreso) return false;
+    }
+
+    const dateToFilter = p.demographics.ingreso || p.demographics.egreso;
+    if (filterMonth || filterYear) {
+      if (!dateToFilter) return false;
+      const [y, m] = dateToFilter.split('-');
+      if (filterYear && y !== filterYear) return false;
+      if (filterMonth && m !== filterMonth) return false;
+    }
+
+    if (searchTerm) {
+      const term = searchTerm.toLowerCase();
+      return (
+        (p.demographics.nombre && p.demographics.nombre.toLowerCase().includes(term)) ||
+        (p.demographics.identificadorInterno && p.demographics.identificadorInterno.toLowerCase().includes(term)) ||
+        (p.demographics.numeroPaciente && p.demographics.numeroPaciente.toLowerCase().includes(term)) ||
+        (p.demographics.diagnosticoPrincipal && p.demographics.diagnosticoPrincipal.toLowerCase().includes(term))
+      );
+    }
+    return true;
+  });
+
+  // Métricas de Pacientes
+  const activeCount = patients.filter(p => !p.deleted && !p.demographics.egreso).length;
+  const atbCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.perfilFarmaco.some(f => f.categoria === 'Antibiótico' && f.estado === 'Activo')).length;
+  const altoRiesgoCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.perfilFarmaco.some(f => f.categoria === 'Alto Riesgo' && f.estado === 'Activo')).length;
+
+  // Lógica para Vista de PRM
+  let allPrms = [];
+  if (dashboardTab === 'prms') {
+    filteredPatients.forEach(p => {
+      if(p.prms) {
+        p.prms.forEach(prm => {
+           allPrms.push({
+             ...prm,
+             patientId: p.id,
+             patientName: p.demographics.nombre,
+             patientExp: p.demographics.numeroPaciente,
+             patientFv: p.demographics.identificadorInterno
+           });
+        });
+      }
+    });
+    if (filterPrmCategory) allPrms = allPrms.filter(p => p.categoria === filterPrmCategory);
+    if (filterPrmGravity) allPrms = allPrms.filter(p => p.gravedad === filterPrmGravity);
+    allPrms.sort((a,b) => new Date(b.fecha) - new Date(a.fecha));
+  }
+
+  // Lógica para Vista PROA
+  let allMicros = [];
+  if (dashboardTab === 'proa') {
+     filteredPatients.forEach(p => {
+        if(p.microbiologia) {
+           p.microbiologia.forEach(m => {
+              allMicros.push({
+                 ...m,
+                 patientId: p.id,
+                 patientName: p.demographics.nombre,
+                 patientExp: p.demographics.numeroPaciente,
+                 patientFv: p.demographics.identificadorInterno,
+                 diagnostico: p.demographics.diagnosticoPrincipal || 'N/A',
+                 tipoPaciente: p.demographics.tipoPaciente || 'N/A',
+                 atbActivos: p.perfilFarmaco.filter(f => f.categoria === 'Antibiótico' && f.estado === 'Activo').map(f => f.principio).join(', ') || 'Ninguno',
+                 maxDiasATB: Math.max(0, ...p.perfilFarmaco.filter(f => f.categoria === 'Antibiótico' && f.estado === 'Activo').map(atb => calculateDaysOfUse(atb.fechaInicio, p.demographics.egreso)))
+              });
+           });
+        }
+     });
+     allMicros.sort((a,b) => new Date(b.fechaMuestra) - new Date(a.fechaMuestra));
+  }
+
+  // Métricas para Dashboard de Calidad
+  const totalPacientesCalidad = filteredPatients.length;
+  const idoneidadCount = filteredPatients.filter(p => p.perfilFarmacoMeta?.evaluadoPrevioPrimeraDosis).length;
+  const ingresoCount = filteredPatients.filter(p => p.conciliacion.ingresoNA || p.conciliacion.ingreso.length > 0).length;
+  const egresoCount = filteredPatients.filter(p => p.conciliacion.egresoNA || p.conciliacion.egreso.length > 0).length;
+
+  const handleExportGeneral = () => {
+    const rows = [
+      [
+        "Identificador interno (FV)", "N° Expediente", "Habitación", "Nombre del paciente", "Fecha de nacimiento", 
+        "Edad", "Genero", "Episodio", "Fecha de ingreso DD/MM/AA HH:MM", 
+        "Fecha de egreso DD/MM/AA HH:MM", "Días internado", "Diagnostico", 
+        "Motivo de ingreso / Procedimiento", "Tipo de paciente", "Medico tratante", 
+        "Alergias", "Especialidad", "Observaciones Generales", "Idoneidad (1ra Dosis)", "Conc. Ingreso", "Conc. Cambio Área", 
+        "Conc. Cambio Médico", "Conc. Egreso", "MAR", "Polifarmacia >5 med", "\"Antibiótico ¿Cuales?\"", "Cultivos"
+      ]
+    ];
+    
+    filteredPatients.forEach(p => {
+      const { years } = calculateAge(p.demographics.fechaNacimiento);
+      const estancia = calculateDaysOfUse(p.demographics.ingreso, p.demographics.egreso);
+      
+      const valIdoneidad = p.perfilFarmacoMeta?.evaluadoPrevioPrimeraDosis ? 'Sí' : 'No';
+      const cIng = p.conciliacion.ingresoNA ? 'NA' : (p.conciliacion.ingreso.length > 0 ? 'Sí' : 'No');
+      const cArea = p.conciliacion.transicionAreaNA ? 'NA' : (p.conciliacion.transicionesArea?.length > 0 ? 'Sí' : 'No');
+      const cMedico = p.conciliacion.transicionMedicoNA ? 'NA' : (p.conciliacion.transicionMedico ? 'Sí' : 'No');
+      const cEgr = p.conciliacion.egresoNA ? 'NA' : (p.conciliacion.egreso.length > 0 ? 'Sí' : 'No');
+      
+      const activos = p.perfilFarmaco.filter(f => f.estado === 'Activo');
+      const poli = activos.length > 5 ? 'Sí' : 'No';
+      
+      const marActivos = p.perfilFarmaco.filter(f => f.categoria === 'Alto Riesgo');
+      const marString = marActivos.length > 0 ? `Sí: ${marActivos.map(f=>f.principio).join(', ')}` : 'No';
+      
+      const atbActivos = p.perfilFarmaco.filter(f => f.categoria === 'Antibiótico');
+      const atbString = atbActivos.length > 0 ? atbActivos.map(f=>f.principio).join(', ') : 'Ninguno';
+      
+      const aislamientos = p.microbiologia.map(m => m.microorganismo).filter(x => x).join(', ') || 'Ninguno';
+
+      rows.push([
+        p.demographics.identificadorInterno || p.id, p.demographics.numeroPaciente, p.demographics.habitacion, p.demographics.nombre, p.demographics.fechaNacimiento,
+        years, p.demographics.genero, p.demographics.numeroEpisodio,
+        formatExcelDate(p.demographics.ingreso), formatExcelDate(p.demographics.egreso),
+        estancia, p.demographics.diagnosticoPrincipal, p.demographics.motivoIngreso,
+        p.demographics.tipoPaciente, p.demographics.medico, p.demographics.alergias, p.demographics.especialidad, p.demographics.observacionesGenerales,
+        valIdoneidad, cIng, cArea, cMedico, cEgr, marString, poli, atbString, aislamientos
+      ]);
+    });
+    exportToCSV(`Base_Pacientes_${view}_${filterMonth||'Todo'}_${filterYear||'Todo'}.csv`, rows);
+  };
+
+  const handleExportPRMsAndInteractions = () => {
+    const rows = [
+      ["REPORTE GLOBAL DE PRMs E INTERACCIONES", `Filtros aplicados: Mes ${filterMonth || 'Todos'}, Año ${filterYear || 'Todos'}, Vista: ${view}`],
+      [],
+      ["--- PROBLEMAS RELACIONADOS CON MEDICAMENTOS (PRM) ---"],
+      [
+        "Fecha", "ID Interno (FV)", "N° Expediente", "Nombre Paciente", "Área", "Medicamento", "Vía", "Grupo", 
+        "Descripción del PRM", "Categoría PRM", "Análisis categoría", "Causa Raíz", 
+        "Intervención", "Descripción intervención", "Aceptación", "Resolución", "Gravedad", "Reportado a calidad"
+      ]
+    ];
+
+    filteredPatients.forEach(p => {
+      (p.prms || []).forEach(prm => {
+        rows.push([
+          prm.fecha, p.demographics.identificadorInterno, p.demographics.numeroPaciente, p.demographics.nombre, prm.area, prm.medicamento, prm.via, prm.grupo,
+          prm.descripcion, prm.categoria, prm.analisis, prm.causaRaiz,
+          prm.intervencion, prm.descIntervencion, prm.aceptacion, prm.resolucion, prm.gravedad, prm.reportadoCalidad
+        ]);
+      });
+    });
+
+    rows.push([], [], ["--- INTERACCIONES MEDICAMENTOSAS ---"]);
+    rows.push(["Fecha", "ID Interno (FV)", "N° Expediente", "Nombre Paciente", "Medicamentos Involucrados", "Grado de Interacción", "Consecuencias (Qué puede pasar)"]);
+
+    filteredPatients.forEach(p => {
+      (p.interacciones || []).forEach(int => {
+        rows.push([
+          int.fecha, p.demographics.identificadorInterno, p.demographics.numeroPaciente, p.demographics.nombre, int.medicamentos, int.grado, int.consecuencia
+        ]);
+      });
+    });
+
+    exportToCSV(`PRMs_Interacciones_${view}_${filterMonth||'Todo'}_${filterYear||'Todo'}.csv`, rows);
+  };
+
+  const handleExportPROA = () => {
+     const rows = [
+        ["REPORTE PROA - AISLAMIENTOS MICROBIOLÓGICOS Y USO DE ATB", `Filtros aplicados: Mes ${filterMonth || 'Todos'}, Año ${filterYear || 'Todos'}`],
+        [],
+        ["Fecha de Muestra", "Paciente", "ID Interno (FV)", "N° Expediente", "Diagnóstico Principal", "Tipo de Paciente", "Antibióticos Activos", "Días Máximos ATB", "Tipo de Muestra", "Sitio de Cultivo", "Microorganismo Aislado", "Sensibilidad (S)", "Resistencia (R)", "Observaciones / MIC"]
+     ];
+     allMicros.forEach(m => {
+        rows.push([m.fechaMuestra, m.patientName, m.patientFv, m.patientExp, m.diagnostico, m.tipoPaciente, m.atbActivos, m.maxDiasATB, m.tipoMuestra, m.sitioCultivo, m.microorganismo, m.sensibles, m.resistentes, m.observaciones]);
+     });
+     exportToCSV(`Reporte_PROA_${view}_${filterMonth||'Todo'}_${filterYear||'Todo'}.csv`, rows);
+  };
+
+  return (
+    <div className="flex-1 p-8 relative">
+      <div className="max-w-7xl mx-auto">
+        
+        {/* TABS DE DASHBOARD */}
+        <div className="flex flex-wrap gap-2 border-b border-slate-300 mb-6">
+           <button onClick={() => setDashboardTab('pacientes')} className={`pb-3 px-2 text-lg transition-colors flex items-center ${dashboardTab === 'pacientes' ? 'border-b-4 border-blue-600 font-bold text-blue-800' : 'text-slate-500 hover:text-slate-700'}`}>
+             <Users className="w-5 h-5 mr-2"/> Censo de Pacientes
+           </button>
+           <button onClick={() => setDashboardTab('prms')} className={`pb-3 px-2 text-lg transition-colors flex items-center ${dashboardTab === 'prms' ? 'border-b-4 border-orange-500 font-bold text-orange-700' : 'text-slate-500 hover:text-slate-700'}`}>
+             <PieChart className="w-5 h-5 mr-2"/> Monitor de PRM
+           </button>
+           <button onClick={() => setDashboardTab('proa')} className={`pb-3 px-2 text-lg transition-colors flex items-center ${dashboardTab === 'proa' ? 'border-b-4 border-purple-500 font-bold text-purple-700' : 'text-slate-500 hover:text-slate-700'}`}>
+             <Bug className="w-5 h-5 mr-2"/> PROA (Microbiología)
+           </button>
+           <button onClick={() => setDashboardTab('calidad')} className={`pb-3 px-2 text-lg transition-colors flex items-center ${dashboardTab === 'calidad' ? 'border-b-4 border-emerald-500 font-bold text-emerald-700' : 'text-slate-500 hover:text-slate-700'}`}>
+             <CheckSquare className="w-5 h-5 mr-2"/> Calidad y Conciliación
+           </button>
+        </div>
+
+        {/* ---------------- VISTA DE PACIENTES ---------------- */}
+        {dashboardTab === 'pacientes' && (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-blue-500">
+                <div className="bg-blue-50 p-3 rounded-lg mr-4"><Users className="w-8 h-8 text-blue-600" /></div>
+                <div><p className="text-sm font-medium text-slate-500">Total Pacientes Activos</p><p className="text-3xl font-black text-slate-800">{activeCount}</p></div>
+              </div>
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-orange-500">
+                <div className="bg-orange-50 p-3 rounded-lg mr-4"><Activity className="w-8 h-8 text-orange-600" /></div>
+                <div><p className="text-sm font-medium text-slate-500">Con Antimicrobianos (ATB)</p><p className="text-3xl font-black text-orange-600">{atbCount}</p></div>
+              </div>
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-red-500">
+                <div className="bg-red-50 p-3 rounded-lg mr-4"><AlertTriangle className="w-8 h-8 text-red-600" /></div>
+                <div><p className="text-sm font-medium text-slate-500">Con Alto Riesgo Activo</p><p className="text-3xl font-black text-red-600">{altoRiesgoCount}</p></div>
+              </div>
+            </div>
+
+            {/* Barra de Controles (Vistas y Filtros) */}
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0">
+              <div className="flex space-x-1 bg-slate-100 p-1 rounded-lg">
+                <button onClick={() => setView('activos')} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${view === 'activos' ? 'bg-white text-blue-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Pacientes Activos</button>
+                <button onClick={() => setView('egresados')} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${view === 'egresados' ? 'bg-white text-blue-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Egresados</button>
+                <button onClick={() => setView('papelera')} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center ${view === 'papelera' ? 'bg-red-50 text-red-700 shadow-sm border border-red-200' : 'text-slate-600 hover:text-red-600'}`}><Trash2 className="w-4 h-4 mr-1"/> Papelera</button>
+              </div>
+              
+              <div className="flex flex-wrap gap-2 items-center">
+                <div className="relative">
+                  <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                  <input type="text" placeholder="Buscar ID o paciente..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm shadow-sm w-48" />
+                </div>
+                <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)} className="py-2 px-3 border border-slate-300 rounded-lg text-sm shadow-sm text-slate-700">
+                  <option value="">Mes (Todos)</option>{MESES.map(m => <option key={m.val} value={m.val}>{m.label}</option>)}
+                </select>
+                <select value={filterYear} onChange={e => setFilterYear(e.target.value)} className="py-2 px-3 border border-slate-300 rounded-lg text-sm shadow-sm text-slate-700">
+                  <option value="">Año (Todos)</option>{ANIOS.map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+                
+                <button onClick={handleExportGeneral} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg flex items-center font-medium shadow-sm transition ml-2 text-sm" title="Exportar Demográficos y Clínicos"><FileSpreadsheet className="w-4 h-4 mr-2" /> Exportar General</button>
+
+                {view !== 'papelera' && <button onClick={onCreate} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center font-medium shadow-sm transition text-sm ml-2"><UserPlus className="w-4 h-4 mr-2" /> Nuevo</button>}
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+              <table className="w-full text-left border-collapse">
+                <thead className="bg-slate-800 text-white border-b border-slate-700">
+                  <tr>
+                    <th className="p-3 font-semibold text-sm w-24">Ingreso</th>
+                    <th className="p-3 font-semibold text-sm">Paciente y Alertas clínicas</th>
+                    <th className="p-3 font-semibold text-sm">Ubicación y Médico</th>
+                    <th className="p-3 font-semibold text-sm">Diagnóstico Principal</th>
+                    <th className="p-3 font-semibold text-sm text-center">Estancia</th>
+                    <th className="p-3 font-semibold text-sm text-center" title="Medicamentos Activos / Total">Meds (Act.)</th>
+                    <th className="p-3 font-semibold text-sm text-center">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredPatients.length === 0 && <tr><td colSpan="7" className="p-8 text-center text-slate-500">No hay registros para esta vista o filtros seleccionados.</td></tr>}
+                  {filteredPatients.map(p => {
+                    const { years } = calculateAge(p.demographics.fechaNacimiento);
+                    const estancia = calculateDaysOfUse(p.demographics.ingreso, p.demographics.egreso);
+                    const medsActivos = p.perfilFarmaco.filter(f => f.estado === 'Activo').length;
+                    const medsTotal = p.perfilFarmaco.length;
+                    
+                    const creatData = p.labs["Creatinina Sérica"] || [];
+                    const latestCreat = creatData.length > 0 ? creatData[creatData.length - 1].value : '';
+                    const crcl = calculateCrCl(years, p.demographics.peso, p.demographics.genero, latestCreat);
+                    
+                    const hasAlergias = p.demographics.alergias && p.demographics.alergias.toLowerCase() !== 'no' && p.demographics.alergias.toLowerCase() !== 'ninguna' && p.demographics.alergias.trim() !== '';
+                    const hasAltoRiesgo = p.perfilFarmaco.some(f => f.categoria === 'Alto Riesgo' && f.estado === 'Activo');
+                    
+                    // Cálculo de días máximos de uso de antibióticos activos
+                    const atbActivosList = p.perfilFarmaco.filter(f => f.categoria === 'Antibiótico' && f.estado === 'Activo');
+                    let maxDiasATB = 0;
+                    atbActivosList.forEach(atb => {
+                        const dias = calculateDaysOfUse(atb.fechaInicio, p.demographics.egreso);
+                        if (dias > maxDiasATB) maxDiasATB = dias;
+                    });
+                    const hasATB = atbActivosList.length > 0;
+
+                    const hasAislamiento = p.microbiologia && p.microbiologia.some(m => m.microorganismo && m.microorganismo.trim() !== '');
+                    const idoneidadOk = p.perfilFarmacoMeta?.evaluadoPrevioPrimeraDosis;
+
+                    // LÓGICA DE PRESENCIA COLABORATIVA (Sustituye al candado)
+                    const otherActiveUsers = (p.activeUsers || []).filter(uid => uid !== currentUser.id);
+                    const otherNames = otherActiveUsers.map(uid => users.find(u => u.id === uid)?.nombre).join(', ');
+
+                    let rowColor = "border-b border-slate-100 transition-colors cursor-pointer ";
+                    
+                    if (!p.deleted) {
+                      if (hasAltoRiesgo) rowColor += "bg-red-50 hover:bg-red-100";
+                      else if (hasATB) rowColor += "bg-orange-50 hover:bg-orange-100";
+                      else rowColor += "hover:bg-slate-50";
+                    } else if (p.deleted) {
+                      rowColor += "bg-slate-100 opacity-70";
+                    }
+
+                    return (
+                      <tr key={p.id} className={rowColor} onClick={() => {
+                          if(view === 'papelera') return;
+                          onSelect(p.id, 'demographics');
+                      }}>
+                        <td className="p-3 text-slate-600 font-medium text-sm">
+                          {formatExcelDate(p.demographics.ingreso).split(' ')[0] || '-'}
+                          <div className="text-xs font-mono text-slate-400 mt-1" title="ID Interno FV">{p.demographics.identificadorInterno}</div>
+                          {p.demographics.numeroEpisodio && <div className="text-[10px] bg-slate-200 inline-block px-1 rounded text-slate-600 mt-1">Ep: {p.demographics.numeroEpisodio}</div>}
+                        </td>
+                        <td className="p-3">
+                          <p className="font-bold text-slate-800 text-base">{p.demographics.nombre || 'Sin Nombre'}</p>
+                          <p className="text-xs text-slate-600 mb-1 flex items-center">
+                            {years ? `${years} a.` : '-'} | {p.demographics.genero || '-'} | {p.demographics.peso ? `${p.demographics.peso} kg` : '-'}
+                            {crcl && <span className={`ml-2 font-medium px-1.5 rounded-sm border ${getTfgColorClass(crcl)}`}>TFG: {crcl}</span>}
+                          </p>
+                          <div className="flex space-x-1.5 mt-1 flex-wrap">
+                            {/* ETIQUETA COLABORATIVA EN LUGAR DE CANDADO ROJO */}
+                            {otherActiveUsers.length > 0 && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800 mb-1" title={`Editando: ${otherNames}`}><Users className="w-3 h-3 mr-1"/> EDITANDO ({otherActiveUsers.length})</span>}
+                            {hasAlergias && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-600 text-white mb-1" title={p.demographics.alergias}>ALERGIAS</span>}
+                            {idoneidadOk && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-200 text-green-800 mb-1" title="Idoneidad validada previo a primera dosis"><CheckCircle className="w-3 h-3 mr-1"/> IDONEIDAD OK</span>}
+                            {hasAltoRiesgo && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-200 text-red-800 mb-1">ALTO RIESGO</span>}
+                            {hasATB && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-200 text-orange-800 mb-1">ATB ({maxDiasATB} d)</span>}
+                            {hasAislamiento && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-200 text-purple-800 mb-1 flex items-center" title="Cultivo Positivo"><Bug className="w-3 h-3 mr-1"/> AISLAMIENTO</span>}
+                          </div>
+                        </td>
+                        <td className="p-3">
+                          <p className="font-bold text-slate-700">Hab: {p.demographics.habitacion || '-'}</p>
+                          <p className="text-xs text-slate-500">{p.demographics.medico || '-'}</p>
+                          <p className="text-[10px] text-blue-600 uppercase mt-0.5">{p.demographics.especialidad || ''}</p>
+                        </td>
+                        <td className="p-3 text-slate-600 text-sm truncate max-w-xs" title={p.demographics.diagnosticoPrincipal}>{p.demographics.diagnosticoPrincipal || '-'}</td>
+                        <td className="p-3 text-center">
+                          <span className="font-bold text-slate-700">{estancia} d</span>
+                          {p.demographics.egreso && <span className="block text-[10px] text-red-500 font-bold leading-tight mt-0.5">EGRESADO</span>}
+                        </td>
+                        <td className="p-3 text-center">
+                          <span className={`font-bold ${medsActivos > 0 ? 'text-blue-600' : 'text-slate-400'}`}>{medsActivos}</span>
+                          <span className="text-xs text-slate-400"> / {medsTotal}</span>
+                        </td>
+                        <td className="p-3 flex justify-center">
+                          {view === 'papelera' ? (
+                            <div className="flex space-x-2">
+                              <button onClick={(e) => { e.stopPropagation(); onRestore(p.id); }} className="text-green-600 hover:bg-green-100 p-2 rounded-md transition-colors" title="Restaurar paciente"><RefreshCcw className="w-5 h-5" /></button>
+                              {/* Advertencia si intentan borrar uno con alguien dentro */}
+                              <button disabled={otherActiveUsers.length > 0} onClick={(e) => { e.stopPropagation(); if(otherActiveUsers.length === 0) onHardDelete(p.id); }} className={`p-2 rounded-md transition-colors ${otherActiveUsers.length > 0 ? 'text-slate-300 cursor-not-allowed' : 'text-red-600 hover:bg-red-200'}`} title={otherActiveUsers.length > 0 ? 'En uso por otros usuarios' : 'Eliminar permanentemente'}><Trash2 className="w-5 h-5" /></button>
+                            </div>
+                          ) : (
+                            <button disabled={otherActiveUsers.length > 0} onClick={(e) => { e.stopPropagation(); if(otherActiveUsers.length === 0) onDelete(p.id); }} className={`p-2 rounded-md transition-colors ${otherActiveUsers.length > 0 ? 'text-slate-300 cursor-not-allowed' : 'text-slate-400 hover:bg-red-100 hover:text-red-600'}`} title={otherActiveUsers.length > 0 ? 'En uso por otros usuarios' : 'Mover a papelera'}><Trash2 className="w-5 h-5" /></button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        {/* ---------------- VISTA EXCLUSIVA DE PRMs ---------------- */}
+        {dashboardTab === 'prms' && (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-orange-500">
+                <div className="bg-orange-50 p-3 rounded-lg mr-4"><FileWarning className="w-8 h-8 text-orange-600" /></div>
+                <div><p className="text-sm font-medium text-slate-500">PRMs Detectados</p><p className="text-3xl font-black text-slate-800">{allPrms.length}</p></div>
+              </div>
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-red-500">
+                <div className="bg-red-50 p-3 rounded-lg mr-4"><ShieldAlert className="w-8 h-8 text-red-600" /></div>
+                <div><p className="text-sm font-medium text-slate-500">Graves o Letales</p><p className="text-3xl font-black text-red-600">{allPrms.filter(p => p.gravedad === 'Grave' || p.gravedad === 'Letal').length}</p></div>
+              </div>
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-green-500">
+                <div className="bg-green-50 p-3 rounded-lg mr-4"><ListChecks className="w-8 h-8 text-green-600" /></div>
+                <div><p className="text-sm font-medium text-slate-500">Intervenciones Aceptadas</p><p className="text-3xl font-black text-green-600">{allPrms.filter(p => p.aceptacion === 'Aceptada').length}</p></div>
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-wrap gap-2 items-center">
+               <span className="text-sm font-bold text-slate-500 mr-2"><Filter className="w-4 h-4 inline mr-1"/> Filtros PRM:</span>
+               <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)} className="py-2 px-3 border border-slate-300 rounded-lg text-sm shadow-sm text-slate-700">
+                 <option value="">Mes (Todos)</option>{MESES.map(m => <option key={m.val} value={m.val}>{m.label}</option>)}
+               </select>
+               <select value={filterYear} onChange={e => setFilterYear(e.target.value)} className="py-2 px-3 border border-slate-300 rounded-lg text-sm shadow-sm text-slate-700">
+                 <option value="">Año (Todos)</option>{ANIOS.map(y => <option key={y} value={y}>{y}</option>)}
+               </select>
+               <select value={filterPrmCategory} onChange={e => setFilterPrmCategory(e.target.value)} className="py-2 px-3 border border-slate-300 rounded-lg text-sm shadow-sm text-slate-700">
+                 <option value="">Categoría (Todas)</option>
+                 {CATEGORIAS_PRM.map(c => <option key={c} value={c}>{c}</option>)}
+               </select>
+               <select value={filterPrmGravity} onChange={e => setFilterPrmGravity(e.target.value)} className="py-2 px-3 border border-slate-300 rounded-lg text-sm shadow-sm text-slate-700">
+                 <option value="">Gravedad (Todas)</option>
+                 <option value="Leve">Leve</option><option value="Moderada">Moderada</option>
+                 <option value="Grave">Grave</option><option value="Letal">Letal</option>
+               </select>
+
+               <div className="flex-1 text-right">
+                  <button onClick={handleExportPRMsAndInteractions} className="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded-lg inline-flex items-center font-medium shadow-sm transition text-sm" title="Exportar Base de Datos de PRMs"><FileWarning className="w-4 h-4 mr-2" /> Exportar a Excel</button>
+               </div>
+            </div>
+
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+              <table className="w-full text-left border-collapse">
+                <thead className="bg-slate-800 text-white border-b border-slate-700">
+                  <tr>
+                    <th className="p-3 font-semibold text-sm w-24">Fecha</th>
+                    <th className="p-3 font-semibold text-sm">Paciente</th>
+                    <th className="p-3 font-semibold text-sm">Categoría y Análisis</th>
+                    <th className="p-3 font-semibold text-sm">Medicamento Involucrado</th>
+                    <th className="p-3 font-semibold text-sm text-center">Intervención</th>
+                    <th className="p-3 font-semibold text-sm text-center">Estatus y Gravedad</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {allPrms.length === 0 && <tr><td colSpan="6" className="p-8 text-center text-slate-500">No hay PRMs registrados con los filtros actuales.</td></tr>}
+                  {allPrms.map((prm, idx) => {
+                    const originalPatient = patients.find(px => px.id === prm.patientId);
+                    const otherActiveUsers = originalPatient ? (originalPatient.activeUsers || []).filter(uid => uid !== currentUser.id) : [];
+
+                    return (
+                    <tr key={idx} onClick={() => onSelect(prm.patientId, 'prm')} className={`border-b border-slate-100 transition-colors hover:bg-orange-50 cursor-pointer`}>
+                      <td className="p-3 text-slate-600 font-medium text-sm">{formatExcelDate(prm.fecha).split(' ')[0]}</td>
+                      <td className="p-3">
+                        <p className="font-bold text-slate-800 text-sm flex items-center">
+                            {otherActiveUsers.length > 0 && <Users className="w-3 h-3 text-blue-500 mr-1" title="Otros editando"/>}
+                            {prm.patientName || 'Sin Nombre'}
+                        </p>
+                        <p className="text-xs text-slate-500 font-mono">FV: {prm.patientFv || '-'} | Exp: {prm.patientExp}</p>
+                      </td>
+                      <td className="p-3">
+                         <span className="inline-block px-2 py-0.5 bg-slate-200 text-slate-800 text-xs rounded font-bold mb-1">{prm.categoria || '-'}</span>
+                         <p className="text-xs text-slate-600 truncate max-w-xs">{prm.analisis || '-'}</p>
+                      </td>
+                      <td className="p-3 font-medium text-sm text-slate-700">{prm.medicamento || '-'}</td>
+                      <td className="p-3 text-center">
+                         <p className="text-sm font-bold text-blue-700">{prm.intervencion || '-'}</p>
+                         <p className={`text-[10px] font-bold uppercase mt-1 ${prm.aceptacion === 'Aceptada' ? 'text-green-600' : prm.aceptacion === 'No Aceptada' ? 'text-red-600' : 'text-amber-600'}`}>{prm.aceptacion || 'Sin estatus'}</p>
+                      </td>
+                      <td className="p-3 text-center">
+                         <p className={`text-xs font-bold px-2 py-1 rounded inline-block ${prm.resolucion === 'Resuelto' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>{prm.resolucion || '-'}</p>
+                         <p className={`text-[10px] font-bold uppercase mt-1 ${prm.gravedad === 'Grave' || prm.gravedad === 'Letal' ? 'text-red-600' : 'text-slate-500'}`}>{prm.gravedad}</p>
+                      </td>
+                    </tr>
+                  )})}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        {/* ---------------- VISTA EXCLUSIVA PROA (MICROBIOLOGÍA) ---------------- */}
+        {dashboardTab === 'proa' && (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-purple-500">
+                <div className="bg-purple-50 p-3 rounded-lg mr-4"><TestTube className="w-8 h-8 text-purple-600" /></div>
+                <div><p className="text-sm font-medium text-slate-500">Total de Cultivos</p><p className="text-3xl font-black text-slate-800">{allMicros.length}</p></div>
+              </div>
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-blue-500">
+                <div className="bg-blue-50 p-3 rounded-lg mr-4"><Bug className="w-8 h-8 text-blue-600" /></div>
+                <div><p className="text-sm font-medium text-slate-500">Aislamientos Positivos</p><p className="text-3xl font-black text-blue-600">{allMicros.filter(m => m.microorganismo && m.microorganismo.trim() !== '').length}</p></div>
+              </div>
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-red-500">
+                <div className="bg-red-50 p-3 rounded-lg mr-4"><ShieldAlert className="w-8 h-8 text-red-600" /></div>
+                <div><p className="text-sm font-medium text-slate-500">Reportes c/Resistencia</p><p className="text-3xl font-black text-red-600">{allMicros.filter(m => m.resistentes && m.resistentes.trim() !== '').length}</p></div>
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-wrap gap-2 items-center">
+               <span className="text-sm font-bold text-slate-500 mr-2"><Filter className="w-4 h-4 inline mr-1"/> Filtros PROA:</span>
+               <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)} className="py-2 px-3 border border-slate-300 rounded-lg text-sm shadow-sm text-slate-700">
+                 <option value="">Mes (Todos)</option>{MESES.map(m => <option key={m.val} value={m.val}>{m.label}</option>)}
+               </select>
+               <select value={filterYear} onChange={e => setFilterYear(e.target.value)} className="py-2 px-3 border border-slate-300 rounded-lg text-sm shadow-sm text-slate-700">
+                 <option value="">Año (Todos)</option>{ANIOS.map(y => <option key={y} value={y}>{y}</option>)}
+               </select>
+
+               <div className="flex-1 text-right">
+                  <button onClick={handleExportPROA} className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg inline-flex items-center font-medium shadow-sm transition text-sm" title="Exportar Aislamientos PROA"><FileSpreadsheet className="w-4 h-4 mr-2" /> Exportar PROA</button>
+               </div>
+            </div>
+
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+              <table className="w-full text-left border-collapse">
+                <thead className="bg-slate-800 text-white border-b border-slate-700">
+                  <tr>
+                    <th className="p-3 font-semibold text-sm w-24">Fecha</th>
+                    <th className="p-3 font-semibold text-sm">Paciente</th>
+                    <th className="p-3 font-semibold text-sm">Muestra y Sitio</th>
+                    <th className="p-3 font-semibold text-sm text-purple-200">Microorganismo Aislado</th>
+                    <th className="p-3 font-semibold text-sm text-red-200">Resistencias Notables</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {allMicros.length === 0 && <tr><td colSpan="5" className="p-8 text-center text-slate-500">No hay cultivos registrados con los filtros actuales.</td></tr>}
+                  {allMicros.map((mic, idx) => {
+                    const originalPatient = patients.find(px => px.id === mic.patientId);
+                    const otherActiveUsers = originalPatient ? (originalPatient.activeUsers || []).filter(uid => uid !== currentUser.id) : [];
+
+                    return (
+                    <tr key={idx} onClick={() => onSelect(mic.patientId, 'micro')} className={`border-b border-slate-100 transition-colors hover:bg-purple-50 cursor-pointer`}>
+                      <td className="p-3 text-slate-600 font-medium text-sm">{formatExcelDate(mic.fechaMuestra).split(' ')[0]}</td>
+                      <td className="p-3">
+                        <p className="font-bold text-slate-800 text-sm flex items-center">
+                            {otherActiveUsers.length > 0 && <Users className="w-3 h-3 text-blue-500 mr-1" title="Otros editando"/>}
+                            {mic.patientName || 'Sin Nombre'}
+                        </p>
+                        <p className="text-xs text-slate-500 font-mono">FV: {mic.patientFv || '-'} | Exp: {mic.patientExp}</p>
+                      </td>
+                      <td className="p-3">
+                         <p className="font-bold text-slate-700 text-sm">{mic.tipoMuestra || '-'}</p>
+                         <p className="text-xs text-slate-500">Sitio: {mic.sitioCultivo || '-'}</p>
+                      </td>
+                      <td className="p-3">
+                         {mic.microorganismo ? (
+                           <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-bold bg-purple-100 text-purple-800 border border-purple-200"><Bug className="w-3 h-3 mr-1"/> {mic.microorganismo}</span>
+                         ) : <span className="text-xs text-slate-400 italic">Sin crecimiento / Pendiente</span>}
+                         {mic.observaciones && <p className="text-[10px] text-slate-500 mt-1">{mic.observaciones}</p>}
+                      </td>
+                      <td className="p-3">
+                         <p className="text-xs text-red-700 font-medium max-w-xs">{mic.resistentes || '-'}</p>
+                      </td>
+                    </tr>
+                  )})}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        {/* ---------------- VISTA EXCLUSIVA CALIDAD Y CONCILIACIÓN ---------------- */}
+        {dashboardTab === 'calidad' && (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex items-center border-l-4 border-l-slate-400">
+                <div className="bg-slate-50 p-2 rounded-lg mr-3"><Users className="w-6 h-6 text-slate-600" /></div>
+                <div><p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Pacientes Vista</p><p className="text-2xl font-black text-slate-800">{totalPacientesCalidad}</p></div>
+              </div>
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex items-center border-l-4 border-l-blue-500">
+                <div className="bg-blue-50 p-2 rounded-lg mr-3"><CheckCircle className="w-6 h-6 text-blue-600" /></div>
+                <div><p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Idoneidad (1ra Dosis)</p><p className="text-2xl font-black text-blue-600">{idoneidadCount}</p></div>
+              </div>
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex items-center border-l-4 border-l-emerald-500">
+                <div className="bg-emerald-50 p-2 rounded-lg mr-3"><ClipboardList className="w-6 h-6 text-emerald-600" /></div>
+                <div><p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Conciliación Ingreso</p><p className="text-2xl font-black text-emerald-600">{ingresoCount}</p></div>
+              </div>
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex items-center border-l-4 border-l-purple-500">
+                <div className="bg-purple-50 p-2 rounded-lg mr-3"><CheckSquare className="w-6 h-6 text-purple-600" /></div>
+                <div><p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Conciliación Egreso</p><p className="text-2xl font-black text-purple-600">{egresoCount}</p></div>
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-wrap gap-2 items-center">
+               <span className="text-sm font-bold text-slate-500 mr-2"><Filter className="w-4 h-4 inline mr-1"/> Filtros Tabla:</span>
+               
+               <div className="flex space-x-1 bg-slate-100 p-1 rounded-lg mr-4">
+                  <button onClick={() => setView('activos')} className={`px-4 py-1.5 rounded-md text-xs font-medium transition-colors ${view === 'activos' ? 'bg-white text-emerald-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Activos</button>
+                  <button onClick={() => setView('egresados')} className={`px-4 py-1.5 rounded-md text-xs font-medium transition-colors ${view === 'egresados' ? 'bg-white text-emerald-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Egresados</button>
+               </div>
+
+               <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)} className="py-1.5 px-2 border border-slate-300 rounded-lg text-xs shadow-sm text-slate-700">
+                 <option value="">Mes (Todos)</option>{MESES.map(m => <option key={m.val} value={m.val}>{m.label}</option>)}
+               </select>
+               <select value={filterYear} onChange={e => setFilterYear(e.target.value)} className="py-1.5 px-2 border border-slate-300 rounded-lg text-xs shadow-sm text-slate-700">
+                 <option value="">Año (Todos)</option>{ANIOS.map(y => <option key={y} value={y}>{y}</option>)}
+               </select>
+
+               <div className="flex-1 text-right">
+                  <button onClick={handleExportGeneral} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg inline-flex items-center font-medium shadow-sm transition text-sm" title="Exportar métricas e información general"><FileSpreadsheet className="w-4 h-4 mr-2" /> Exportar KPIs de Calidad</button>
+               </div>
+            </div>
+
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+              <table className="w-full text-left border-collapse">
+                <thead className="bg-slate-800 text-white border-b border-slate-700">
+                  <tr>
+                    <th className="p-3 font-semibold text-sm">Paciente y Expediente</th>
+                    <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">Validación Idoneidad<br/><span className="text-[10px] font-normal text-slate-300">(Previo 1ra Dosis)</span></th>
+                    <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">1. Conciliación<br/>al Ingreso</th>
+                    <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">2. Transición<br/>de Área</th>
+                    <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">3. Transición<br/>de Médico</th>
+                    <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">4. Conciliación<br/>al Egreso</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredPatients.length === 0 && <tr><td colSpan="6" className="p-8 text-center text-slate-500">No hay registros para mostrar.</td></tr>}
+                  {filteredPatients.map((p, idx) => {
+                    const idoneidadDone = p.perfilFarmacoMeta?.evaluadoPrevioPrimeraDosis;
+                    const ingresoDone = p.conciliacion.ingreso.length > 0;
+                    const ingresoNA = p.conciliacion.ingresoNA;
+                    const transAreaDone = p.conciliacion.transicionesArea?.length > 0;
+                    const transAreaNA = p.conciliacion.transicionAreaNA;
+                    const transMedDone = p.conciliacion.transicionMedico;
+                    const transMedNA = p.conciliacion.transicionMedicoNA;
+                    const egresoDone = p.conciliacion.egreso.length > 0;
+                    const egresoNA = p.conciliacion.egresoNA;
+
+                    const otherActiveUsers = (p.activeUsers || []).filter(uid => uid !== currentUser.id);
+
+                    return (
+                      <tr key={idx} onClick={() => onSelect(p.id, 'conciliation')} className={`border-b border-slate-100 transition-colors hover:bg-emerald-50 cursor-pointer`}>
+                        <td className="p-3">
+                          <p className="font-bold text-slate-800 text-sm flex items-center">
+                             {otherActiveUsers.length > 0 && <Users className="w-3 h-3 text-blue-500 mr-1" title="Otros editando"/>}
+                             {p.demographics.nombre || 'Sin Nombre'}
+                          </p>
+                          <p className="text-xs text-slate-500 font-mono">FV: {p.demographics.identificadorInterno || '-'} | Exp: {p.demographics.numeroPaciente} | Ep: {p.demographics.numeroEpisodio}</p>
+                        </td>
+                        <td className="p-3 text-center border-l border-slate-100">
+                           <StatusBadge done={idoneidadDone} isNA={false} />
+                        </td>
+                        <td className="p-3 text-center border-l border-slate-100 bg-slate-50">
+                           <StatusBadge done={ingresoDone} isNA={ingresoNA} />
+                        </td>
+                        <td className="p-3 text-center border-l border-slate-100">
+                           <StatusBadge done={transAreaDone} isNA={transAreaNA} />
+                        </td>
+                        <td className="p-3 text-center border-l border-slate-100 bg-slate-50">
+                           <StatusBadge done={transMedDone} isNA={transMedNA} />
+                        </td>
+                        <td className="p-3 text-center border-l border-slate-100">
+                           <StatusBadge done={egresoDone} isNA={egresoNA} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// VISTAS DEL PACIENTE (Pestañas)
+// ==========================================
+
+function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
+  const d = patient.demographics;
+  const { years: edad, group: grupoEtario } = calculateAge(d.fechaNacimiento);
+  const imc = calculateIMC(d.peso, d.altura);
+  const sc = calculateSC(d.peso, d.altura);
+  const pesoIdeal = calculateIdealWeight(d.altura, d.genero);
+  const pesoAjustado = calculateAdjustedWeight(d.peso, pesoIdeal);
+
+  const handleChange = (e) => updatePatient({ demographics: { ...d, [e.target.name]: e.target.value } });
+
+  // DETECCIÓN DE DUPLICADOS EN TIEMPO REAL (Solo por Nombre y Fecha de Nacimiento)
+  const possibleDuplicates = allPatients.filter(p => {
+    if (p.id === patient.id || p.deleted) return false;
+    
+    const myBase = patient.pacienteBaseId || patient.id;
+    const theirBase = p.pacienteBaseId || p.id;
+    if (myBase === theirBase) return false;
+
+    const hasName = p.demographics.nombre && d.nombre && d.nombre.trim().length > 3;
+    const sameName = hasName && p.demographics.nombre.toLowerCase().trim() === d.nombre.toLowerCase().trim();
+    
+    const hasDob = p.demographics.fechaNacimiento && d.fechaNacimiento;
+    const sameDob = hasDob && p.demographics.fechaNacimiento === d.fechaNacimiento;
+    
+    return sameName && sameDob;
+  });
+
+  const vincularComoReingreso = (dup) => {
+    const baseId = dup.pacienteBaseId || dup.id;
+    updatePatient({
+      pacienteBaseId: baseId,
+      demographics: {
+        ...d,
+        nombre: dup.demographics.nombre,
+        fechaNacimiento: dup.demographics.fechaNacimiento,
+        genero: dup.demographics.genero,
+        peso: dup.demographics.peso,
+        altura: dup.demographics.altura,
+        alergias: dup.demographics.alergias,
+        intolerancias: dup.demographics.intolerancias,
+        toxicomania: dup.demographics.toxicomania,
+        alcoholismo: dup.demographics.alcoholismo,
+        detallesAdicciones: dup.demographics.detallesAdicciones,
+        fuma: dup.demographics.fuma,
+        tipoPaciente: dup.demographics.tipoPaciente
+      }
+    });
+  };
+
+  let imcColorClass = 'bg-slate-100 text-slate-800 border-slate-200';
+  let imcLabel = '';
+  if (imc) {
+    if (imc < 18.5) { imcColorClass = 'bg-blue-100 text-blue-800 border-blue-300 font-bold'; imcLabel = '(Bajo Peso)'; }
+    else if (imc >= 18.5 && imc <= 24.9) { imcColorClass = 'bg-green-100 text-green-800 border-green-300 font-bold'; imcLabel = '(Normal)'; }
+    else if (imc >= 25 && imc <= 29.9) { imcColorClass = 'bg-orange-100 text-orange-800 border-orange-300 font-bold'; imcLabel = '(Sobrepeso)'; }
+    else if (imc >= 30) { imcColorClass = 'bg-red-100 text-red-800 border-red-300 font-bold'; imcLabel = '(Obesidad)'; }
+  }
+
+  return (
+    <div className="space-y-8">
+      {/* ALERTA DE DUPLICIDAD */}
+      {possibleDuplicates.length > 0 && !patient.pacienteBaseId && (
+        <div className="bg-amber-50 border-l-4 border-amber-500 p-4 mb-6 rounded-r-md flex flex-col md:flex-row justify-between items-start md:items-center shadow-sm print:hidden">
+           <div>
+             <h4 className="font-bold text-amber-800 flex items-center"><AlertTriangle className="w-5 h-5 mr-2" /> Posible paciente duplicado detectado</h4>
+             <p className="text-sm text-amber-700 mt-1">Se encontró un registro existente para <strong>{possibleDuplicates[0].demographics.nombre}</strong> (Ingreso: {formatExcelDate(possibleDuplicates[0].demographics.ingreso).split(' ')[0]}).</p>
+           </div>
+           <button onClick={() => vincularComoReingreso(possibleDuplicates[0])} className="mt-3 md:mt-0 bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded text-sm font-bold shadow transition flex items-center">
+              <Layers className="w-4 h-4 mr-2" /> Vincular como Reingreso
+           </button>
+        </div>
+      )}
+
+      <section>
+        <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-1 text-blue-800 print:text-black">1. Identificación y Ubicación</h3>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+          <div className="flex flex-col">
+            <label className="text-sm font-semibold text-slate-600 mb-1 truncate">Identificador Interno (FV)</label>
+            <input type="text" name="identificadorInterno" readOnly value={d.identificadorInterno || ''} className="border-slate-300 rounded-md shadow-sm sm:text-sm px-3 py-2 bg-slate-100 text-slate-500 font-mono border cursor-not-allowed" title="ID Auto-generado por el sistema" />
+          </div>
+          <FormInput label="No. de Paciente (Expediente)" name="numeroPaciente" value={d.numeroPaciente} onChange={handleChange} />
+          <FormInput label="No. de Episodio" name="numeroEpisodio" value={d.numeroEpisodio} onChange={handleChange} />
+          <FormInput label="Habitación" name="habitacion" value={d.habitacion} onChange={handleChange} />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="col-span-2"><FormInput label="Nombre Completo" name="nombre" value={d.nombre} onChange={handleChange} /></div>
+          <div className="col-span-1"><FormInput label="Médico Tratante" name="medico" value={d.medico} onChange={handleChange} /></div>
+          <FormInput label="Fecha de Nacimiento" type="date" name="fechaNacimiento" value={d.fechaNacimiento} onChange={handleChange} />
+        </div>
+      </section>
+
+      <section>
+        <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-1 text-blue-800 print:text-black">2. Clínica y Hospitalización</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <FormSelect label="Género" name="genero" value={d.genero} onChange={handleChange} options={["Masculino", "Femenino"]} />
+          <FormInput label="Fecha de Ingreso (con hora)" type="datetime-local" name="ingreso" value={d.ingreso} onChange={handleChange} />
+          <FormInput label="Fecha de Egreso (con hora)" type="datetime-local" name="egreso" value={d.egreso} onChange={handleChange} />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <FormSelect label="Tipo de paciente" name="tipoPaciente" value={d.tipoPaciente} onChange={handleChange} options={TIPOS_PACIENTE} />
+          <FormSelect label="Especialidad" name="especialidad" value={d.especialidad} onChange={handleChange} options={ESPECIALIDADES} />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <FormInput label="Motivo de Ingreso / Procedimiento" name="motivoIngreso" value={d.motivoIngreso} onChange={handleChange} />
+          <FormInput label="Diagnóstico Principal" name="diagnosticoPrincipal" value={d.diagnosticoPrincipal} onChange={handleChange} />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div className="flex flex-col"><label className="text-sm font-semibold text-slate-600 mb-1">Antecedentes Médicos</label><textarea name="antecedentes" value={d.antecedentes || ''} onChange={handleChange} rows={2} className="border-slate-300 rounded-md shadow-sm sm:text-sm p-2"></textarea></div>
+          <div className="flex flex-col"><label className="text-sm font-semibold text-slate-600 mb-1">Comorbilidades Actuales</label><textarea name="comorbilidades" value={d.comorbilidades || ''} onChange={handleChange} rows={2} className="border-slate-300 rounded-md shadow-sm sm:text-sm p-2"></textarea></div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <FormInput label="Alergias" name="alergias" value={d.alergias} onChange={handleChange} />
+          <FormInput label="Intolerancias" name="intolerancias" value={d.intolerancias} onChange={handleChange} />
+        </div>
+        <div className="flex flex-col mb-4">
+          <label className="text-sm font-semibold text-slate-600 mb-1">Observaciones Generales Clínicas</label>
+          <textarea name="observacionesGenerales" value={d.observacionesGenerales || ''} onChange={handleChange} rows={3} className="border-slate-300 rounded-md shadow-sm sm:text-sm p-2" placeholder="Cualquier otra observación relevante sobre el paciente..."></textarea>
+        </div>
+      </section>
+
+      <section>
+         <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-1 text-blue-800 print:text-black">3. Hábitos y Estilo de Vida</h3>
+         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            <FormSelect label="¿Tabaquismo?" name="fuma" value={d.fuma} onChange={handleChange} options={["Sí", "No"]} />
+            <FormSelect label="¿Alcoholismo Crónico?" name="alcoholismo" value={d.alcoholismo} onChange={handleChange} options={["Sí", "No"]} />
+            <FormSelect label="¿Toxicomanías?" name="toxicomania" value={d.toxicomania} onChange={handleChange} options={["Sí", "No"]} />
+         </div>
+         {(d.alcoholismo === 'Sí' || d.toxicomania === 'Sí' || d.fuma === 'Sí') && (
+            <div className="flex flex-col mb-4">
+              <label className="text-sm font-semibold text-slate-600 mb-1">Detallar consumo (Frecuencia, cantidad, etc.)</label>
+              <textarea name="detallesAdicciones" value={d.detallesAdicciones || ''} onChange={handleChange} rows={2} className="border-slate-300 rounded-md shadow-sm sm:text-sm p-2 bg-amber-50"></textarea>
+            </div>
+         )}
+      </section>
+
+      <section>
+        <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-1 text-blue-800 print:text-black">4. Antropometría Farmacocinética</h3>
+        <div className="grid grid-cols-2 md:grid-cols-7 gap-4 items-end">
+          <div className="flex flex-col justify-end">
+            <span className="text-sm font-semibold text-slate-600 mb-1">Edad</span>
+            <div className="bg-slate-100 p-2 rounded-md border border-slate-200 h-[38px] flex items-center text-sm px-2 truncate">
+              {edad !== '' ? `${edad} a. (${grupoEtario})` : '-'}
+            </div>
+          </div>
+          <FormInput label="Peso Real (kg)" type="number" name="peso" value={d.peso} onChange={handleChange} />
+          <FormInput label="Altura (cm)" type="number" name="altura" value={d.altura} onChange={handleChange} />
+          <div className="flex flex-col justify-end">
+            <span className="text-sm font-semibold text-slate-600 mb-1 truncate" title="IMC">IMC {imcLabel}</span>
+            <div className={`p-2 rounded-md border h-[38px] flex items-center justify-center font-mono text-sm ${imcColorClass}`}>{imc || '-'}</div>
+          </div>
+          <ReadOnlyField label="Sup. Corp (m²)" value={sc} />
+          <ReadOnlyField label="Peso Ideal (kg)" value={pesoIdeal} />
+          <ReadOnlyField label="Peso Ajust." value={pesoAjustado} />
+        </div>
+        
+        {/* NUEVA ADVERTENCIA DE CÁLCULOS */}
+        <div className="mt-4 bg-blue-50 border border-blue-200 p-3 rounded-md text-xs text-blue-800 flex items-start">
+           <AlertTriangle className="w-4 h-4 mr-2 shrink-0 mt-0.5" />
+           <p><strong>Nota Clínica:</strong> Los cálculos de Edad, IMC, Superficie Corporal, Peso Ideal, Peso Ajustado y Tasa de Filtrado Glomerular son estimaciones matemáticas orientativas generadas automáticamente y <strong>no sustituyen el juicio clínico del profesional</strong> de la salud.</p>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ConciliationTab({ patient, updatePatient }) {
+  const i = patient.interview || {};
+  const conc = patient.conciliacion || { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false };
+
+  const handleAnswer = (qId, value) => updatePatient({ interview: { ...i, [qId]: value } });
+  
+  const addItem = (type) => {
+    const newItem = { id: Date.now().toString(), principio: '', marcaComercial: '', dosis: '', via: '', desdeCuando: '', activo: 'Continua', diasTratamiento: '', sabeParaQue: 'No', observacion: '' };
+    updatePatient({ conciliacion: { ...conc, [type]: [...(conc[type] || []), newItem] } });
+  };
+  const updateItem = (type, id, field, value) => {
+    const list = conc[type] || [];
+    updatePatient({ conciliacion: { ...conc, [type]: list.map(item => item.id === id ? { ...item, [field]: value } : item) } });
+  };
+  const removeItem = (type, id) => updatePatient({ conciliacion: { ...conc, [type]: (conc[type] || []).filter(item => item.id !== id) } });
+
+  const toggleNA = (field) => {
+    updatePatient({ conciliacion: { ...conc, [field]: !conc[field] } });
+  };
+
+  const addTransicionArea = () => {
+    const nuevaTransicion = { id: Date.now().toString(), fecha: new Date().toISOString().split('T')[0], origen: '', destino: '' };
+    updatePatient({ conciliacion: { ...conc, transicionesArea: [...(conc.transicionesArea || []), nuevaTransicion] } });
+  };
+  const updateTransicionArea = (id, field, value) => {
+    updatePatient({ conciliacion: { ...conc, transicionesArea: conc.transicionesArea.map(t => t.id === id ? { ...t, [field]: value } : t) } });
+  };
+  const removeTransicionArea = (id) => {
+    updatePatient({ conciliacion: { ...conc, transicionesArea: conc.transicionesArea.filter(t => t.id !== id) } });
+  };
+
+  const sections = [...new Set(PREGUNTAS_ENTREVISTA.map(q => q.section))];
+
+  return (
+    <div className="space-y-8">
+      <section>
+        <h2 className="text-2xl font-bold text-slate-800 border-b pb-2 mb-4">1. Entrevista de conciliación</h2>
+        {sections.map(sec => (
+          <div key={sec} className="mb-4 print:mb-2">
+            <h3 className="text-sm font-bold uppercase text-slate-500 mb-2">{sec}</h3>
+            <div className="space-y-2">
+              {PREGUNTAS_ENTREVISTA.filter(q => q.section === sec).map(q => (
+                <div key={q.id} className="flex flex-col md:flex-row md:items-center justify-between bg-white border border-slate-200 rounded-lg p-3 shadow-sm print:shadow-none print:border-b print:bg-transparent">
+                  <span className="text-slate-700 text-sm font-medium md:w-1/2 mb-2 md:mb-0">{q.text}</span>
+                  <input type="text" className="border-slate-300 rounded-md shadow-sm flex-1 md:ml-4 text-sm" placeholder="Respuesta detallada..." value={i[q.id] || ''} onChange={(e) => handleAnswer(q.id, e.target.value)} />
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <section>
+        <div className="flex justify-between items-center border-b pb-2 mb-2">
+          <h2 className="text-2xl font-bold text-slate-800">2. Conciliación al Ingreso</h2>
+          {!conc.ingresoNA && (
+            <button onClick={() => addItem('ingreso')} className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm flex items-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
+          )}
+        </div>
+        <label className="flex items-center space-x-2 text-sm text-slate-600 mb-4 cursor-pointer w-max print:mb-2">
+           <input type="checkbox" className="w-4 h-4 text-blue-600 rounded" checked={conc.ingresoNA || false} onChange={() => toggleNA('ingresoNA')} />
+           <span className="font-medium">No aplica / No se realizó (Paciente no tomaba medicamentos previos)</span>
+        </label>
+        
+        {conc.ingresoNA ? (
+          <div className="p-4 bg-slate-100 text-slate-500 rounded border border-slate-200 italic print:bg-transparent">Conciliación al ingreso marcada como No Aplica.</div>
+        ) : (
+          <ConciliationTable items={conc.ingreso || []} type="ingreso" onUpdate={updateItem} onRemove={removeItem} />
+        )}
+      </section>
+
+      <section className="bg-slate-100 p-4 rounded-xl border border-slate-200 print:bg-transparent print:border-none print:p-0">
+        <h2 className="text-lg font-bold text-slate-800 mb-3 flex items-center print:border-b print:pb-2 print:mb-2"><CheckCircle className="w-5 h-5 mr-2 text-blue-600 print:text-black" /> 3. Conciliación de Transición (Checklist)</h2>
+        <div className="flex flex-col space-y-4">
+          
+          <div className="bg-white p-4 rounded-lg border border-slate-200 print:border-b print:rounded-none">
+            <div className="flex justify-between items-center mb-3 border-b pb-2 print:border-none">
+              <span className="font-medium text-slate-700">Se realizó conciliación por Cambio de Área</span>
+              <button onClick={addTransicionArea} className="text-xs bg-blue-100 hover:bg-blue-200 text-blue-700 px-3 py-1.5 rounded font-bold transition flex items-center print:hidden" disabled={conc.transicionAreaNA}>
+                <Plus className="w-3 h-3 mr-1" /> Registrar Cambio
+              </button>
+            </div>
+            
+            <label className="flex items-center space-x-2 text-sm text-slate-600 mb-4 cursor-pointer w-max print:mb-2">
+               <input type="checkbox" className="w-4 h-4 text-blue-600 rounded" checked={conc.transicionAreaNA || false} onChange={() => toggleNA('transicionAreaNA')} />
+               <span className="font-medium">No aplica / No se realizó (No hubo cambios de área)</span>
+            </label>
+
+            {!conc.transicionAreaNA && (!conc.transicionesArea || conc.transicionesArea.length === 0) && (
+              <p className="text-sm text-slate-400 italic">No hay cambios de área registrados.</p>
+            )}
+            {!conc.transicionAreaNA && conc.transicionesArea && conc.transicionesArea.length > 0 && (
+              <div className="space-y-3">
+                {conc.transicionesArea.map((t, index) => (
+                  <div key={t.id} className="flex flex-col md:flex-row space-y-2 md:space-y-0 md:space-x-4 items-end bg-slate-50 p-3 rounded border border-slate-200 relative print:bg-transparent print:p-1">
+                    <span className="absolute top-2 left-2 text-xs font-bold text-slate-400">#{index + 1}</span>
+                    <div className="flex-1 w-full pl-6 md:pl-0"><FormInput label="Fecha del Cambio" type="date" value={t.fecha} onChange={(e) => updateTransicionArea(t.id, 'fecha', e.target.value)} /></div>
+                    <div className="flex-1 w-full"><FormInput label="Área de Origen" value={t.origen} onChange={(e) => updateTransicionArea(t.id, 'origen', e.target.value)} placeholder="Ej. Urgencias" /></div>
+                    <div className="flex-1 w-full"><FormInput label="Área de Destino" value={t.destino} onChange={(e) => updateTransicionArea(t.id, 'destino', e.target.value)} placeholder="Ej. Piso 3" /></div>
+                    <button onClick={() => removeTransicionArea(t.id)} className="p-2 mb-1 text-red-500 hover:bg-red-100 rounded transition print:hidden"><Trash2 className="w-5 h-5"/></button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="bg-white p-3 rounded-lg border border-slate-200 print:border-b print:rounded-none">
+            <label className="flex items-center space-x-3 cursor-pointer mb-2">
+              <input type="checkbox" className="w-5 h-5 text-blue-600 rounded" checked={conc.transicionMedico || false} onChange={(e) => updatePatient({ conciliacion: { ...conc, transicionMedico: e.target.checked } })} disabled={conc.transicionMedicoNA} />
+              <span className={`font-medium ${conc.transicionMedicoNA ? 'text-slate-400' : 'text-slate-700'}`}>Se realizó conciliación por Cambio de Médico Tratante</span>
+            </label>
+            <label className="flex items-center space-x-2 text-sm text-slate-600 cursor-pointer w-max">
+               <input type="checkbox" className="w-4 h-4 text-blue-600 rounded" checked={conc.transicionMedicoNA || false} onChange={() => {
+                   // Si lo marco como NA, desmarco el de "Se realizó"
+                   const newVal = !conc.transicionMedicoNA;
+                   updatePatient({ conciliacion: { ...conc, transicionMedicoNA: newVal, transicionMedico: newVal ? false : conc.transicionMedico } });
+               }} />
+               <span className="font-medium">No aplica (No hubo cambio de médico tratante)</span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div className="flex justify-between items-center border-b pb-2 mb-2">
+          <h2 className="text-2xl font-bold text-slate-800">4. Conciliación al Egreso</h2>
+          {!conc.egresoNA && (
+            <button onClick={() => addItem('egreso')} className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm flex items-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
+          )}
+        </div>
+        <label className="flex items-center space-x-2 text-sm text-slate-600 mb-4 cursor-pointer w-max print:mb-2">
+           <input type="checkbox" className="w-4 h-4 text-blue-600 rounded" checked={conc.egresoNA || false} onChange={() => toggleNA('egresoNA')} />
+           <span className="font-medium">No aplica / No se realizó (Egresado sin medicamentos u otro motivo)</span>
+        </label>
+        
+        {conc.egresoNA ? (
+          <div className="p-4 bg-slate-100 text-slate-500 rounded border border-slate-200 italic print:bg-transparent">Conciliación al egreso marcada como No Aplica.</div>
+        ) : (
+          <ConciliationTable items={conc.egreso || []} type="egreso" onUpdate={updateItem} onRemove={removeItem} />
+        )}
+      </section>
+    </div>
+  );
+}
+
+function ConciliationTable({ items, type, onUpdate, onRemove }) {
+  const isIngreso = type === 'ingreso';
+  return (
+    <div className="overflow-x-auto print:overflow-visible">
+      <table className="min-w-full text-sm border-collapse bg-white border border-slate-200 shadow-sm rounded-lg print:shadow-none print:border-slate-300">
+        <thead className="bg-slate-50 border-b print:bg-slate-100">
+          <tr>
+            <th className="p-2 text-left font-semibold">Principio Activo</th>
+            {isIngreso && <th className="p-2 text-left font-semibold w-24">Marca Com.</th>}
+            <th className="p-2 text-left font-semibold w-24">Dosis/Frec.</th>
+            <th className="p-2 text-left font-semibold w-20">Vía</th>
+            {isIngreso && <th className="p-2 text-left font-semibold w-32">Desde Cuándo</th>}
+            {!isIngreso && <th className="p-2 text-left font-semibold w-28" title="Cuántos días lo tomará al egreso">Días Tratm.</th>}
+            {!isIngreso && <th className="p-2 text-center font-semibold w-24" title="¿Sabe para qué se lo tomará?">¿Sabe uso?</th>}
+            {isIngreso && <th className="p-2 text-left font-semibold w-28">Estado</th>}
+            <th className="p-2 text-left font-semibold">Observaciones</th>
+            <th className="p-2 text-center font-semibold w-10 print:hidden"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.length === 0 && <tr><td colSpan={isIngreso ? "9" : "8"} className="p-4 text-center text-slate-500">No hay medicamentos registrados.</td></tr>}
+          {items.map(item => (
+            <tr key={item.id} className="border-b hover:bg-slate-50">
+              <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" value={item.principio} onChange={(e) => onUpdate(type, item.id, 'principio', e.target.value)} /></td>
+              
+              {isIngreso && <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" placeholder="Opcional" value={item.marcaComercial || ''} onChange={(e) => onUpdate(type, item.id, 'marcaComercial', e.target.value)} /></td>}
+              
+              <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" value={item.dosis} onChange={(e) => onUpdate(type, item.id, 'dosis', e.target.value)} /></td>
+              <td className="p-1"><select className="w-full border-slate-300 rounded text-sm p-1 print:appearance-none print:border-none print:bg-transparent" value={item.via} onChange={(e) => onUpdate(type, item.id, 'via', e.target.value)}><option value="">-</option>{VIAS.map(v => <option key={v} value={v}>{v}</option>)}</select></td>
+              
+              {isIngreso && <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" placeholder="Ej. 2 meses" value={item.desdeCuando || ''} onChange={(e) => onUpdate(type, item.id, 'desdeCuando', e.target.value)} /></td>}
+              
+              {!isIngreso && <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" placeholder="Ej. 7 días" value={item.diasTratamiento || ''} onChange={(e) => onUpdate(type, item.id, 'diasTratamiento', e.target.value)} /></td>}
+              {!isIngreso && (
+                <td className="p-1 text-center">
+                  <select className="w-full border-slate-300 rounded text-sm p-1 print:appearance-none print:border-none print:bg-transparent" value={item.sabeParaQue || 'No'} onChange={(e) => onUpdate(type, item.id, 'sabeParaQue', e.target.value)}>
+                    <option value="Sí">Sí</option><option value="No">No</option>
+                  </select>
+                </td>
+              )}
+              
+              {isIngreso && (
+                <td className="p-1">
+                  <select className="w-full border-slate-300 rounded text-sm p-1 print:appearance-none print:border-none print:bg-transparent" value={item.activo} onChange={(e) => onUpdate(type, item.id, 'activo', e.target.value)}>
+                    <option value="Continua">Continua</option><option value="Suspende">Suspende</option><option value="Modifica">Modifica</option>
+                  </select>
+                </td>
+              )}
+              <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" value={item.observacion} onChange={(e) => onUpdate(type, item.id, 'observacion', e.target.value)} /></td>
+              <td className="p-1 text-center print:hidden"><button onClick={() => onRemove(type, item.id)} className="text-red-500 hover:text-red-700 p-1"><Trash2 className="w-4 h-4" /></button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PharmacotherapyTab({ patient, updatePatient }) {
+  const items = patient.perfilFarmaco || [];
+  const solItems = patient.solucionesIV || [];
+  const meta = patient.perfilFarmacoMeta || { evaluadoPrevioPrimeraDosis: false };
+
+  const addItem = () => {
+    const newItem = { id: Date.now().toString(), categoria: 'General', principio: '', marcaComercial: '', presentacion: '', dosis: '', via: '', frecuencia: '', fechaInicio: new Date().toISOString().split('T')[0], estado: 'Activo', idoneidad: 'Pendiente', fechaSuspension: '', observaciones: '' };
+    updatePatient({ perfilFarmaco: [...items, newItem] });
+  };
+  const updateItem = (id, field, value) => updatePatient({ perfilFarmaco: items.map(item => item.id === id ? { ...item, [field]: value } : item) });
+  const removeItem = (id) => updatePatient({ perfilFarmaco: items.filter(item => item.id !== id) });
+  
+  // --- Lógica para Soluciones Intravenosas ---
+  const addSolucion = () => {
+    const newItem = { id: Date.now().toString(), solucion: '', volumen: '', tiempo: '', velocidad: '', frecuencia: '', fechaInicio: new Date().toISOString().split('T')[0], estado: 'Activo', fechaSuspension: '' };
+    updatePatient({ solucionesIV: [...solItems, newItem] });
+  };
+  
+  const updateSolucion = (id, field, value) => {
+    const newList = solItems.map(item => {
+      if (item.id === id) {
+        let updatedItem = { ...item, [field]: value };
+        
+        // Auto-cálculos si el usuario modifica volumen, tiempo o velocidad
+        const v = parseFloat(updatedItem.volumen);
+        const t = parseFloat(updatedItem.tiempo);
+        const r = parseFloat(updatedItem.velocidad);
+
+        if (field === 'volumen') {
+           if (t > 0) updatedItem.velocidad = (v / t).toFixed(2);
+           else if (r > 0) updatedItem.tiempo = (v / r).toFixed(2);
+        } else if (field === 'tiempo') {
+           if (v > 0 && t > 0) updatedItem.velocidad = (v / t).toFixed(2);
+           else if (t === 0 || isNaN(t)) updatedItem.velocidad = '';
+        } else if (field === 'velocidad') {
+           if (v > 0 && r > 0) updatedItem.tiempo = (v / r).toFixed(2);
+           else if (r === 0 || isNaN(r)) updatedItem.tiempo = '';
+        }
+        return updatedItem;
+      }
+      return item;
+    });
+    updatePatient({ solucionesIV: newList });
+  };
+  
+  const removeSolucion = (id) => updatePatient({ solucionesIV: solItems.filter(item => item.id !== id) });
+
+  const updateMeta = (field, value) => updatePatient({ perfilFarmacoMeta: { ...meta, [field]: value } });
+
+  const atbs = items.filter(i => i.categoria === 'Antibiótico');
+  const altos = items.filter(i => i.categoria === 'Alto Riesgo');
+  const gens = items.filter(i => i.categoria === 'General');
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center border-b pb-2">
+        <h2 className="text-2xl font-bold text-slate-800">Prescripciones Intrahospitalarias</h2>
+        <div className="flex space-x-2">
+           <button onClick={addSolucion} className="bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-2 rounded text-sm flex items-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Solución IV</button>
+           <button onClick={addItem} className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm flex items-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
+        </div>
+      </div>
+
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 flex justify-end shadow-sm print:bg-transparent print:border-none print:shadow-none mb-4">
+        <label className="flex items-center space-x-2 cursor-pointer bg-white px-3 py-1.5 rounded-md shadow-sm border border-blue-200 print:border-none print:shadow-none print:bg-transparent print:p-0">
+          <input type="checkbox" className="w-4 h-4 text-blue-600 rounded" checked={meta.evaluadoPrevioPrimeraDosis} onChange={(e) => updateMeta('evaluadoPrevioPrimeraDosis', e.target.checked)} />
+          <span className="font-semibold text-sm text-slate-800">Idoneidad evaluada antes de 1ra dosis</span>
+        </label>
+      </div>
+
+      <PharmaSection title="Terapia Antimicrobiana" items={atbs} updateItem={updateItem} removeItem={removeItem} patient={patient} theme="orange" />
+      <PharmaSection title="Medicamentos de Alto Riesgo" items={altos} updateItem={updateItem} removeItem={removeItem} patient={patient} theme="red" />
+      <PharmaSection title="Medicamentos Generales" items={gens} updateItem={updateItem} removeItem={removeItem} patient={patient} theme="blue" />
+      
+      {/* SECCIÓN DE SOLUCIONES INTRAVENOSAS */}
+      <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mb-6 print:border-slate-300 print:shadow-none mt-8">
+        <div className={`px-4 py-2 font-bold border-b bg-cyan-100 text-cyan-900 border-cyan-200 print:bg-slate-100 print:text-black print:border-slate-300`}>Soluciones Intravenosas (Fluidos)</div>
+        <div className="overflow-x-auto print:overflow-visible">
+          <table className="min-w-full text-sm border-collapse">
+            <thead className="bg-slate-50 border-b print:bg-white">
+              <tr>
+                <th className="p-2 text-left font-semibold">Solución Base</th>
+                <th className="p-2 text-left font-semibold w-24">Volumen (mL)</th>
+                <th className="p-2 text-left font-semibold w-24">Tiempo (hr)</th>
+                <th className="p-2 text-left font-semibold w-28">Velocidad (mL/hr)</th>
+                <th className="p-2 text-left font-semibold w-20">Frecuencia</th>
+                <th className="p-2 text-left font-semibold w-28">F. Inicio</th>
+                <th className="p-2 text-center font-semibold w-12">Días</th>
+                <th className="p-2 text-left font-semibold w-24">Estado</th>
+                <th className="p-2 text-left font-semibold w-28">F. Susp.</th>
+                <th className="p-2 text-center font-semibold w-8 print:hidden"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {solItems.length === 0 && <tr><td colSpan="10" className="p-3 text-center text-slate-400 italic">No hay soluciones IV registradas.</td></tr>}
+              {solItems.map(item => {
+                const isSuspended = item.estado === 'Suspendido';
+                const endCalculationDate = isSuspended ? item.fechaSuspension : patient.demographics.egreso;
+                const dias = calculateDaysOfUse(item.fechaInicio, endCalculationDate);
+                
+                return (
+                  <tr key={item.id} className={`border-b transition-colors ${isSuspended ? 'bg-slate-100 opacity-75 print:opacity-100 print:bg-slate-50' : 'hover:bg-cyan-50'}`}>
+                    <td className="p-1"><input type="text" placeholder="Ej. Sol. Salina 0.9%" className={`w-full border-slate-300 rounded text-xs font-medium print:border-none print:bg-transparent ${isSuspended?'line-through text-slate-500 bg-slate-200':''}`} value={item.solucion} onChange={(e) => updateSolucion(item.id, 'solucion', e.target.value)} /></td>
+                    <td className="p-1"><input type="number" step="0.1" className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.volumen} onChange={(e) => updateSolucion(item.id, 'volumen', e.target.value)} /></td>
+                    <td className="p-1"><input type="number" step="0.1" className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.tiempo} onChange={(e) => updateSolucion(item.id, 'tiempo', e.target.value)} /></td>
+                    <td className="p-1"><input type="number" step="0.1" className={`w-full border-slate-300 rounded text-xs font-bold text-cyan-700 print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.velocidad} onChange={(e) => updateSolucion(item.id, 'velocidad', e.target.value)} /></td>
+                    <td className="p-1"><input type="text" placeholder="Ej. c/8h o Cont." className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.frecuencia} onChange={(e) => updateSolucion(item.id, 'frecuencia', e.target.value)} /></td>
+                    <td className="p-1"><input type="date" className={`w-full border-slate-300 rounded text-xs p-1 print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.fechaInicio} onChange={(e) => updateSolucion(item.id, 'fechaInicio', e.target.value)} /></td>
+                    <td className="p-1 text-center font-bold text-slate-700">{item.fechaInicio ? dias : '-'}</td>
+                    <td className="p-1">
+                      <select className={`w-full rounded text-xs p-1 font-bold print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-50 text-green-800 border-green-300'}`} value={item.estado} onChange={(e) => {
+                        updateSolucion(item.id, 'estado', e.target.value);
+                        if (e.target.value === 'Suspendido' && !item.fechaSuspension) updateSolucion(item.id, 'fechaSuspension', new Date().toISOString().split('T')[0]);
+                        if (e.target.value === 'Activo') updateSolucion(item.id, 'fechaSuspension', '');
+                      }}>
+                        <option value="Activo">Activo</option>
+                        <option value="Suspendido">Suspend</option>
+                      </select>
+                    </td>
+                    <td className="p-1">{isSuspended && <input type="date" className="w-full border-red-300 bg-red-50 text-red-800 rounded text-xs p-1 print:border-none print:bg-transparent" value={item.fechaSuspension || ''} onChange={(e) => updateSolucion(item.id, 'fechaSuspension', e.target.value)} />}</td>
+                    <td className="p-1 text-center print:hidden"><button onClick={() => removeSolucion(item.id)} className="text-red-500 hover:text-red-700"><Trash2 className="w-4 h-4" /></button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PharmaSection({ title, items, updateItem, removeItem, patient, theme }) {
+  const headerColors = { orange: 'bg-orange-100 text-orange-900 border-orange-200', red: 'bg-red-100 text-red-900 border-red-200', blue: 'bg-slate-100 text-slate-800 border-slate-200' };
+
+  const sortedItems = [...items].sort((a, b) => {
+    if (a.estado === 'Suspendido' && b.estado !== 'Suspendido') return 1;
+    if (a.estado !== 'Suspendido' && b.estado === 'Suspendido') return -1;
+    return 0;
+  });
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mb-6 print:border-slate-300 print:shadow-none">
+      <div className={`px-4 py-2 font-bold border-b ${headerColors[theme]} print:bg-slate-100 print:text-black print:border-slate-300`}>{title}</div>
+      <div className="overflow-x-auto print:overflow-visible">
+        <table className="min-w-full text-sm border-collapse">
+          <thead className="bg-slate-50 border-b print:bg-white">
+            <tr>
+              <th className="p-2 text-left font-semibold w-24">Categoría</th>
+              <th className="p-2 text-left font-semibold">Principio Activo</th>
+              <th className="p-2 text-left font-semibold">Marca Com.</th>
+              <th className="p-2 text-left font-semibold w-16">Present.</th>
+              <th className="p-2 text-left font-semibold w-16">Dosis</th>
+              <th className="p-2 text-left font-semibold w-16">Vía</th>
+              <th className="p-2 text-left font-semibold w-16">Frec.</th>
+              <th className="p-2 text-left font-semibold w-24">F. Inicio</th>
+              <th className="p-2 text-center font-semibold w-10" title="Días activos">Días</th>
+              <th className="p-2 text-left font-semibold w-24">Idoneidad</th>
+              <th className="p-2 text-left font-semibold w-24">Estado</th>
+              <th className="p-2 text-left font-semibold w-24">F. Susp.</th>
+              <th className="p-2 text-left font-semibold">Obs.</th>
+              <th className="p-2 text-center font-semibold w-8 print:hidden"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedItems.length === 0 && <tr><td colSpan="14" className="p-3 text-center text-slate-400 italic">No hay registros.</td></tr>}
+            {sortedItems.map(item => {
+              const isSuspended = item.estado === 'Suspendido';
+              const endCalculationDate = isSuspended ? item.fechaSuspension : patient.demographics.egreso;
+              const dias = calculateDaysOfUse(item.fechaInicio, endCalculationDate);
+              
+              return (
+                <tr key={item.id} className={`border-b transition-colors ${isSuspended ? 'bg-slate-100 opacity-75 print:opacity-100 print:bg-slate-50' : 'hover:bg-slate-50'}`}>
+                  <td className="p-1"><select className={`w-full border-slate-300 rounded text-xs p-1 print:appearance-none print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.categoria} onChange={(e) => updateItem(item.id, 'categoria', e.target.value)}>{CATEGORIAS_FARMACO.map(c => <option key={c} value={c}>{c}</option>)}</select></td>
+                  <td className="p-1"><input type="text" className={`w-full border-slate-300 rounded text-xs font-medium print:border-none print:bg-transparent ${isSuspended?'line-through text-slate-500 bg-slate-200':''}`} value={item.principio} onChange={(e) => updateItem(item.id, 'principio', e.target.value)} /></td>
+                  <td className="p-1"><input type="text" className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} placeholder="Opcional" value={item.marcaComercial || ''} onChange={(e) => updateItem(item.id, 'marcaComercial', e.target.value)} /></td>
+                  <td className="p-1"><select className={`w-full border-slate-300 rounded text-xs p-1 print:appearance-none print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.presentacion} onChange={(e) => updateItem(item.id, 'presentacion', e.target.value)}><option value="">-</option>{PRESENTACIONES.map(p => <option key={p} value={p}>{p}</option>)}</select></td>
+                  <td className="p-1"><input type="text" className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.dosis} onChange={(e) => updateItem(item.id, 'dosis', e.target.value)} /></td>
+                  <td className="p-1"><select className={`w-full border-slate-300 rounded text-xs p-1 print:appearance-none print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.via} onChange={(e) => updateItem(item.id, 'via', e.target.value)}><option value="">-</option>{VIAS.map(v => <option key={v} value={v}>{v}</option>)}</select></td>
+                  <td className="p-1"><input type="text" className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.frecuencia} onChange={(e) => updateItem(item.id, 'frecuencia', e.target.value)} /></td>
+                  <td className="p-1"><input type="date" className={`w-full border-slate-300 rounded text-xs p-1 print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.fechaInicio} onChange={(e) => updateItem(item.id, 'fechaInicio', e.target.value)} /></td>
+                  <td className="p-1 text-center font-bold text-slate-700">{item.fechaInicio ? dias : '-'}</td>
+                  
+                  <td className="p-1">
+                    <select className={`w-full rounded text-xs p-1 font-bold border-slate-300 print:appearance-none print:border-none print:bg-transparent ${item.idoneidad === 'Idóneo' ? 'text-green-700' : item.idoneidad === 'No Idóneo' ? 'text-red-700 bg-red-50' : 'text-amber-600'}`} value={item.idoneidad || 'Pendiente'} onChange={(e) => updateItem(item.id, 'idoneidad', e.target.value)}>
+                      {IDONEIDAD_OPCIONES.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </td>
+
+                  <td className="p-1">
+                    <select className={`w-full rounded text-xs p-1 font-bold print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-50 text-green-800 border-green-300'}`} value={item.estado} onChange={(e) => {
+                      updateItem(item.id, 'estado', e.target.value);
+                      if (e.target.value === 'Suspendido' && !item.fechaSuspension) updateItem(item.id, 'fechaSuspension', new Date().toISOString().split('T')[0]);
+                      if (e.target.value === 'Activo') updateItem(item.id, 'fechaSuspension', '');
+                    }}>
+                      <option value="Activo">Activo</option>
+                      <option value="Suspendido">Suspend</option>
+                    </select>
+                  </td>
+                  <td className="p-1">{isSuspended && <input type="date" className="w-full border-red-300 bg-red-50 text-red-800 rounded text-xs p-1 print:border-none print:bg-transparent" value={item.fechaSuspension || ''} onChange={(e) => updateItem(item.id, 'fechaSuspension', e.target.value)} />}</td>
+                  <td className="p-1"><input type="text" className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} placeholder="Indicación..." value={item.observaciones} onChange={(e) => updateItem(item.id, 'observaciones', e.target.value)} /></td>
+                  <td className="p-1 text-center print:hidden"><button onClick={() => removeItem(item.id)} className="text-red-500 hover:text-red-700"><Trash2 className="w-4 h-4" /></button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function PrmTab({ patient, updatePatient }) {
+  const prms = patient.prms || [];
+  const interacciones = patient.interacciones || [];
+  
+  const addPrm = () => updatePatient({ prms: [...prms, { id: Date.now().toString(), fecha: new Date().toISOString().split('T')[0], area: patient.demographics.habitacion || '', medicamento: '', via: '', grupo: '', descripcion: '', categoria: '', analisis: '', causaRaiz: '', intervencion: '', descIntervencion: '', aceptacion: '', resolucion: '', gravedad: '', reportadoCalidad: 'No' }] });
+  const updatePrm = (id, field, value) => updatePatient({ prms: prms.map(item => item.id === id ? { ...item, [field]: value } : item) });
+  const removePrm = (id) => updatePatient({ prms: prms.filter(item => item.id !== id) });
+
+  const addInteraccion = () => updatePatient({ interacciones: [...interacciones, { id: Date.now().toString(), fecha: new Date().toISOString().split('T')[0], medicamentos: '', grado: '', consecuencia: '' }] });
+  const updateInteraccion = (id, field, value) => updatePatient({ interacciones: interacciones.map(item => item.id === id ? { ...item, [field]: value } : item) });
+  const removeInteraccion = (id) => updatePatient({ interacciones: interacciones.filter(item => item.id !== id) });
+
+  return (
+    <div className="space-y-12">
+      {/* SECCIÓN 1: PRM */}
+      <section className="space-y-4">
+        <div className="flex justify-between items-center border-b pb-2">
+          <div><h2 className="text-2xl font-bold text-orange-700 flex items-center print:text-black"><FileWarning className="w-6 h-6 mr-2"/> Problemas Relacionados con Medicamentos (PRM)</h2></div>
+          <button onClick={addPrm} className="bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-sm flex items-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Registrar PRM</button>
+        </div>
+        <div className="grid gap-6">
+          {prms.length === 0 && <div className="text-center p-8 bg-slate-50 border border-dashed border-slate-300 rounded-lg text-slate-500 print:bg-transparent">No hay PRMs registrados.</div>}
+          {prms.map((item, index) => (
+            <div key={item.id} className="bg-white border border-orange-200 shadow-sm rounded-lg p-5 relative print:border-slate-300 print:shadow-none">
+              <button onClick={() => removePrm(item.id)} className="absolute top-4 right-4 text-slate-400 hover:text-red-600 print:hidden"><Trash2 className="w-5 h-5"/></button>
+              <div className="text-xs font-bold text-orange-600 mb-3 print:text-black">PRM #{index + 1}</div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4 pr-6">
+                <FormInput label="Fecha" type="date" value={item.fecha} onChange={(e) => updatePrm(item.id, 'fecha', e.target.value)} />
+                <FormInput label="Área / Servicio" value={item.area} onChange={(e) => updatePrm(item.id, 'area', e.target.value)} />
+                <FormInput label="Medicamento Involucrado" value={item.medicamento} onChange={(e) => updatePrm(item.id, 'medicamento', e.target.value)} />
+                <FormSelect label="Vía" value={item.via} onChange={(e) => updatePrm(item.id, 'via', e.target.value)} options={VIAS} />
+                <FormSelect label="Grupo / Clase" value={item.grupo} onChange={(e) => updatePrm(item.id, 'grupo', e.target.value)} options={CATEGORIAS_FARMACO} />
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                <FormSelect label="Categoría PRM" value={item.categoria} onChange={(e) => updatePrm(item.id, 'categoria', e.target.value)} options={CATEGORIAS_PRM} />
+                <FormInput label="Análisis Categoría" value={item.analisis} onChange={(e) => updatePrm(item.id, 'analisis', e.target.value)} placeholder="Ej. Dosis sub-terapéutica..." />
+                <FormInput label="Causa Raíz" value={item.causaRaiz} onChange={(e) => updatePrm(item.id, 'causaRaiz', e.target.value)} placeholder="Ej. Omisión de lectura de labs..." />
+              </div>
+
+              <div className="mb-4">
+                <div className="flex flex-col"><label className="text-sm font-semibold text-slate-600 mb-1">Descripción del PRM</label><textarea value={item.descripcion} onChange={(e) => updatePrm(item.id, 'descripcion', e.target.value)} rows={2} className="border-slate-300 rounded-md shadow-sm sm:text-sm p-2 print:border-none print:bg-transparent"></textarea></div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                <FormInput label="Intervención Propuesta" value={item.intervencion} onChange={(e) => updatePrm(item.id, 'intervencion', e.target.value)} placeholder="Ej. Ajuste de dosis..." />
+                <div className="flex flex-col col-span-2"><label className="text-sm font-semibold text-slate-600 mb-1">Descripción Intervención</label><textarea value={item.descIntervencion} onChange={(e) => updatePrm(item.id, 'descIntervencion', e.target.value)} rows={1} className="border-slate-300 rounded-md shadow-sm sm:text-sm p-2 print:border-none print:bg-transparent"></textarea></div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 bg-slate-50 p-3 rounded-lg border border-slate-100 print:bg-transparent print:border-none print:p-0">
+                <FormSelect label="Aceptación (Médico)" value={item.aceptacion} onChange={(e) => updatePrm(item.id, 'aceptacion', e.target.value)} options={['Aceptada', 'Parcialmente Aceptada', 'No Aceptada']} />
+                <FormSelect label="Resolución Final" value={item.resolucion} onChange={(e) => updatePrm(item.id, 'resolucion', e.target.value)} options={['Resuelto', 'No Resuelto']} />
+                <FormSelect label="Gravedad" value={item.gravedad} onChange={(e) => updatePrm(item.id, 'gravedad', e.target.value)} options={['Leve', 'Moderada', 'Grave', 'Letal']} />
+                <FormSelect label="¿Reportado a Calidad?" value={item.reportadoCalidad} onChange={(e) => updatePrm(item.id, 'reportadoCalidad', e.target.value)} options={['No', 'Sí']} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* SECCIÓN 2: INTERACCIONES */}
+      <section className="space-y-4">
+        <div className="flex justify-between items-center border-b pb-2">
+          <div><h2 className="text-2xl font-bold text-amber-600 flex items-center print:text-black">Interacciones Medicamentosas</h2></div>
+          <button onClick={addInteraccion} className="bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded text-sm flex items-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Registrar Interacción</button>
+        </div>
+        <div className="grid gap-6">
+          {interacciones.length === 0 && <div className="text-center p-8 bg-slate-50 border border-dashed border-slate-300 rounded-lg text-slate-500 print:bg-transparent">No hay interacciones registradas.</div>}
+          {interacciones.map((item, index) => (
+            <div key={item.id} className="bg-white border border-amber-200 shadow-sm rounded-lg p-5 relative print:border-slate-300 print:shadow-none">
+              <button onClick={() => removeInteraccion(item.id)} className="absolute top-4 right-4 text-slate-400 hover:text-red-600 print:hidden"><Trash2 className="w-5 h-5"/></button>
+              <div className="text-xs font-bold text-amber-600 mb-3 print:text-black">Interacción #{index + 1}</div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4 pr-6">
+                <FormInput label="Fecha" type="date" value={item.fecha} onChange={(e) => updateInteraccion(item.id, 'fecha', e.target.value)} />
+                <FormSelect label="Grado de Interacción" value={item.grado} onChange={(e) => updateInteraccion(item.id, 'grado', e.target.value)} options={['Contraindicada', 'Mayor', 'Moderada', 'Menor']} />
+                <div className="col-span-2"><FormInput label="Medicamentos que Interactúan (Ej. Fármaco A + Fármaco B)" value={item.medicamentos} onChange={(e) => updateInteraccion(item.id, 'medicamentos', e.target.value)} /></div>
+              </div>
+              <div className="flex flex-col"><label className="text-sm font-semibold text-slate-600 mb-1">Consecuencia (¿Qué puede pasar?)</label><textarea value={item.consecuencia} onChange={(e) => updateInteraccion(item.id, 'consecuencia', e.target.value)} rows={2} className="border-slate-300 rounded-md shadow-sm sm:text-sm p-2 print:border-none print:bg-transparent" placeholder="Describe los efectos clínicos de la interacción..."></textarea></div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// COMPONENTE: Mini Gráfico Evolutivo de Laboratorios
+function Sparkline({ data }) {
+  if (!data || data.length < 2) return null;
+  const values = data.map(d => Number(d.value)).filter(v => !isNaN(v) && v !== null && v !== 0); // Omitimos ceros o vacíos
+  if (values.length < 2) return null;
+  
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = (max - min) || 1; // Evita div/0 si son iguales
+  
+  const width = 80;
+  const height = 24;
+  const padding = 3;
+  
+  const points = values.map((v, i) => {
+    const x = padding + (i / (values.length - 1)) * (width - 2 * padding);
+    const y = padding + (height - 2 * padding) - ((v - min) / range) * (height - 2 * padding);
+    return `${x},${y}`;
+  }).join(' ');
+
+  return (
+    <svg width={width} height={height} className="overflow-visible" title="Tendencia histórica del paciente">
+      <polyline points={points} fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      {values.map((v, i) => {
+        const x = padding + (i / (values.length - 1)) * (width - 2 * padding);
+        const y = padding + (height - 2 * padding) - ((v - min) / range) * (height - 2 * padding);
+        return <circle key={i} cx={x} cy={y} r="2.5" fill="#1d4ed8" />
+      })}
+    </svg>
+  );
+}
+
+function LabsTab({ patient, updatePatient }) {
+  const labs = patient.labs || {};
+  const d = patient.demographics;
+  const { years: age } = calculateAge(d.fechaNacimiento);
+  
+  const creatData = labs["Creatinina Sérica"] || [];
+  const latestCreat = creatData.length > 0 ? creatData[creatData.length - 1].value : '';
+  const crcl = calculateCrCl(age, d.peso, d.genero, latestCreat);
+
+  const addLabEntry = (paramName) => {
+    const currentData = labs[paramName] || [];
+    updatePatient({ labs: { ...labs, [paramName]: [...currentData, { id: Date.now().toString(), date: new Date().toISOString().split('T')[0], value: '' }] } });
+  };
+  
+  const updateLabEntry = (paramName, id, field, value) => {
+    const currentData = labs[paramName] || [];
+    updatePatient({ labs: { ...labs, [paramName]: currentData.map(item => item.id === id ? { ...item, [field]: value } : item) } });
+  };
+
+  const removeLabEntry = (paramName, id) => {
+    const currentData = labs[paramName] || [];
+    updatePatient({ labs: { ...labs, [paramName]: currentData.filter(item => item.id !== id) } });
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-end border-b pb-2">
+        <h2 className="text-2xl font-bold text-slate-800">Resultados Históricos de Laboratorio</h2>
+        {crcl && (
+           <div className="flex flex-col items-end">
+               <div className={`px-4 py-2 rounded-lg flex items-center shadow-sm border print:shadow-none ${getTfgColorClass(crcl)}`}>
+                  <Activity className="w-5 h-5 mr-2" />
+                  <div className="flex flex-col"><span className="text-xs font-bold uppercase">TFG Est. (Cockcroft-Gault)</span><span className="text-lg font-black">{crcl} <span className="text-sm font-normal">mL/min</span></span></div>
+               </div>
+               <span className="text-[10px] text-slate-500 mt-1 flex items-center"><AlertTriangle className="w-3 h-3 mr-1"/> Cálculo orientativo. No sustituye juicio clínico.</span>
+           </div>
+        )}
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {Object.entries(LAB_TEMPLATES).map(([groupName, params]) => (
+          <div key={groupName} className="bg-white border rounded-xl shadow-sm overflow-hidden print:shadow-none print:border-slate-300">
+            <h3 className="bg-slate-100 p-3 font-bold text-slate-700 border-b print:bg-slate-100">{groupName}</h3>
+            <div className="p-4 space-y-4">
+              {params.map(param => {
+                const labData = labs[param.name] || [];
+                
+                return (
+                  <div key={param.name} className="flex flex-col border-b border-dashed border-slate-200 pb-3">
+                     <div className="flex justify-between items-center mb-2">
+                        <div>
+                          <span className="block text-sm font-bold text-slate-700">{param.name}</span>
+                          <span className="block text-xs text-slate-400">Rango: {param.min !== null ? `${param.min}-${param.max}` : 'N/A'} {param.unit}</span>
+                        </div>
+                        <div className="flex items-center space-x-3">
+                           <Sparkline data={labData} />
+                           <button onClick={() => addLabEntry(param.name)} className="text-[10px] uppercase font-bold bg-blue-50 hover:bg-blue-100 text-blue-600 px-2 py-1.5 rounded flex items-center transition-colors print:hidden"><Plus className="w-3 h-3 mr-1"/> Añadir Dato</button>
+                        </div>
+                     </div>
+                     
+                     {labData.length > 0 ? (
+                       <div className="space-y-1.5 mt-1">
+                          {labData.map((entry) => {
+                             const isOutOfRange = entry.value && param.min !== null && (Number(entry.value) < param.min || Number(entry.value) > param.max);
+                             return (
+                               <div key={entry.id} className="flex items-center space-x-2 bg-slate-50 p-1.5 rounded-md border border-slate-100 print:bg-transparent print:border-none print:p-0">
+                                  <input type="date" value={entry.date} onChange={(e) => updateLabEntry(param.name, entry.id, 'date', e.target.value)} className="text-xs p-1 border border-slate-200 rounded w-28 print:border-none print:p-0" />
+                                  <input type="number" step="0.01" value={entry.value} onChange={(e) => updateLabEntry(param.name, entry.id, 'value', e.target.value)} className={`text-xs p-1 border rounded flex-1 ${isOutOfRange ? 'border-red-400 bg-red-100 text-red-800 font-bold' : 'border-slate-200'} print:border-none print:p-0`} placeholder="Resultado..." />
+                                  <span className="text-xs text-slate-500 w-10 text-right">{param.unit}</span>
+                                  <button onClick={() => removeLabEntry(param.name, entry.id)} className="text-red-400 hover:text-red-600 ml-2 print:hidden" title="Borrar este registro"><X className="w-4 h-4"/></button>
+                               </div>
+                             );
+                          })}
+                       </div>
+                     ) : (
+                       <span className="text-xs text-slate-400 italic">Sin datos registrados.</span>
+                     )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MicrobiologyTab({ patient, updatePatient }) {
+  const items = patient.microbiologia || [];
+  
+  const addItem = () => updatePatient({ microbiologia: [...items, { id: Date.now().toString(), fechaMuestra: new Date().toISOString().split('T')[0], tipoMuestra: '', sitioCultivo: '', microorganismo: '', sensibles: '', resistentes: '', observaciones: '' }] });
+  const updateItem = (id, field, value) => updatePatient({ microbiologia: items.map(item => item.id === id ? { ...item, [field]: value } : item) });
+  const removeItem = (id) => updatePatient({ microbiologia: items.filter(item => item.id !== id) });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center border-b pb-2">
+        <div><h2 className="text-2xl font-bold text-purple-800 flex items-center print:text-black"><Microscope className="w-6 h-6 mr-2"/> Microbiología y Antibiograma</h2></div>
+        <button onClick={addItem} className="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded text-sm flex items-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Nueva Muestra</button>
+      </div>
+      <div className="grid gap-6">
+        {items.length === 0 && <div className="text-center p-8 bg-slate-50 border border-dashed border-slate-300 rounded-lg text-slate-500 print:bg-transparent">No hay cultivos ni aislamientos registrados.</div>}
+        {items.map(item => (
+          <div key={item.id} className="bg-white border border-purple-200 shadow-sm rounded-lg p-5 relative print:border-slate-300 print:shadow-none">
+            <button onClick={() => removeItem(item.id)} className="absolute top-4 right-4 text-slate-400 hover:text-red-600 print:hidden"><Trash2 className="w-5 h-5"/></button>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4 pr-8">
+              <FormInput label="Fecha de Toma" type="date" value={item.fechaMuestra} onChange={(e) => updateItem(item.id, 'fechaMuestra', e.target.value)} />
+              <FormInput label="Tipo de Muestra" value={item.tipoMuestra} onChange={(e) => updateItem(item.id, 'tipoMuestra', e.target.value)} placeholder="Ej. Hemocultivo, Urocultivo..." />
+              <FormInput label="Sitio de Toma" value={item.sitioCultivo} onChange={(e) => updateItem(item.id, 'sitioCultivo', e.target.value)} placeholder="Ej. Catéter, Sonda..." />
+              <FormInput label="Microorganismo Aislado" value={item.microorganismo} onChange={(e) => updateItem(item.id, 'microorganismo', e.target.value)} placeholder="Dejar vacío si negativo"/>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div className="flex flex-col"><label className="text-sm font-semibold text-green-700 mb-1">Sensibilidad (S)</label><textarea value={item.sensibles} onChange={(e) => updateItem(item.id, 'sensibles', e.target.value)} rows={2} className="border-green-300 bg-green-50 rounded-md shadow-sm sm:text-sm p-2 print:border-none print:bg-transparent" placeholder="Antibióticos sensibles..."></textarea></div>
+              <div className="flex flex-col"><label className="text-sm font-semibold text-red-700 mb-1">Resistencia (R)</label><textarea value={item.resistentes} onChange={(e) => updateItem(item.id, 'resistentes', e.target.value)} rows={2} className="border-red-300 bg-red-50 rounded-md shadow-sm sm:text-sm p-2 print:border-none print:bg-transparent" placeholder="Antibióticos resistentes..."></textarea></div>
+            </div>
+            <div className="flex flex-col">
+              <label className="text-sm font-semibold text-slate-600 mb-1">Observaciones (MIC, BLEE, KPC, etc.)</label>
+              <input type="text" value={item.observaciones} onChange={(e) => updateItem(item.id, 'observaciones', e.target.value)} className="w-full border-slate-300 rounded-md shadow-sm sm:text-sm px-3 py-2 print:border-none print:bg-transparent" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RamTab({ patient, updatePatient }) {
+  const items = patient.ram || [];
+  const addItem = () => updatePatient({ ram: [...items, { id: Date.now().toString(), medicamento: '', fecha: new Date().toISOString().split('T')[0], severidad: 'Leve', gravedad: 'No grave', quePaso: '', queSeHizo: '' }] });
+  const updateItem = (id, field, value) => updatePatient({ ram: items.map(item => item.id === id ? { ...item, [field]: value } : item) });
+  const removeItem = (id) => updatePatient({ ram: items.filter(item => item.id !== id) });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center border-b pb-2">
+        <div><h2 className="text-2xl font-bold text-red-700 flex items-center print:text-black"><ShieldAlert className="w-6 h-6 mr-2"/> Reacciones Adversas (RAM)</h2></div>
+        <button onClick={addItem} className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded text-sm flex items-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Registrar RAM</button>
+      </div>
+      <div className="grid gap-6">
+        {items.length === 0 && <div className="text-center p-8 bg-slate-50 border border-dashed border-slate-300 rounded-lg text-slate-500 print:bg-transparent">Sin sospechas de RAM documentadas.</div>}
+        {items.map(item => (
+          <div key={item.id} className="bg-white border-2 border-red-100 shadow-sm rounded-lg p-5 relative print:border-slate-300 print:shadow-none">
+            <button onClick={() => removeItem(item.id)} className="absolute top-4 right-4 text-slate-400 hover:text-red-600 print:hidden"><Trash2 className="w-5 h-5"/></button>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4 pr-8">
+              <div className="col-span-2"><FormInput label="Medicamento Sospechoso" value={item.medicamento} onChange={(e) => updateItem(item.id, 'medicamento', e.target.value)} /></div>
+              <FormInput label="Fecha" type="date" value={item.fecha} onChange={(e) => updateItem(item.id, 'fecha', e.target.value)} />
+              <div className="flex space-x-2">
+                <FormSelect label="Severidad" value={item.severidad} onChange={(e) => updateItem(item.id, 'severidad', e.target.value)} options={["Leve", "Moderada", "Severa"]} />
+                <FormSelect label="Gravedad" value={item.gravedad} onChange={(e) => updateItem(item.id, 'gravedad', e.target.value)} options={["No grave", "Grave"]} />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="flex flex-col"><label className="text-sm font-semibold text-slate-600 mb-1">¿Qué pasó? (Descripción clínica)</label><textarea value={item.quePaso} onChange={(e) => updateItem(item.id, 'quePaso', e.target.value)} rows={3} className="border-slate-300 rounded-md shadow-sm sm:text-sm p-2 print:border-none print:bg-transparent"></textarea></div>
+              <div className="flex flex-col"><label className="text-sm font-semibold text-slate-600 mb-1">¿Qué se hizo? (Intervención)</label><textarea value={item.queSeHizo} onChange={(e) => updateItem(item.id, 'queSeHizo', e.target.value)} rows={3} className="border-slate-300 rounded-md shadow-sm sm:text-sm p-2 print:border-none print:bg-transparent" placeholder="Ej. Suspensión, antídoto, reporte Cofepris..."></textarea></div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// --- Componentes UI Auxiliares ---
+function TabButton({ icon, label, isActive, onClick }) {
+  return (
+    <button onClick={onClick} className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors ${isActive ? 'bg-blue-50 text-blue-700 border border-blue-200 font-semibold' : 'text-slate-600 hover:bg-slate-50 border border-transparent'}`}>
+      <span className={`mr-3 ${isActive ? 'text-blue-600' : 'text-slate-400'}`}>{icon}</span>{label}
+    </button>
+  );
+}
+
+function FormInput({ label, name, type = "text", value = "", onChange, placeholder }) {
+  return (
+    <div className="flex flex-col">
+      <label className="text-sm font-semibold text-slate-600 mb-1 truncate" title={label}>{label}</label>
+      <input type={type} name={name} value={value || ''} onChange={onChange} placeholder={placeholder} className="border-slate-300 rounded-md shadow-sm sm:text-sm px-3 py-2 print:border-none print:bg-transparent print:p-0 print:font-medium print:text-slate-800" />
+    </div>
+  );
+}
+
+function FormSelect({ label, name, value = "", onChange, options }) {
+  return (
+    <div className="flex flex-col w-full">
+      <label className="text-sm font-semibold text-slate-600 mb-1 truncate" title={label}>{label}</label>
+      <select name={name} value={value || ''} onChange={onChange} className="border-slate-300 rounded-md shadow-sm sm:text-sm px-3 py-2 print:appearance-none print:border-none print:bg-transparent print:p-0 print:font-medium print:text-slate-800">
+        <option value="">Sel...</option>{options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function ReadOnlyField({ label, value }) {
+  return (
+    <div className="flex flex-col justify-end">
+      <span className="text-sm font-semibold text-slate-600 mb-1 truncate" title={label}>{label}</span>
+      <div className="bg-slate-100 p-2 rounded-md border border-slate-200 h-[38px] flex items-center justify-center font-mono text-sm print:border-none print:bg-transparent print:p-0 print:justify-start print:font-medium print:text-slate-800">{value || '-'}</div>
+    </div>
+  );
+}
