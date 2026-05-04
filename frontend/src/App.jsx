@@ -1954,6 +1954,18 @@ function PharmacotherapyTab({ patient, updatePatient }) {
     updatePatient({ perfilFarmaco: [...items, newItem] });
   };
   const updateItem = (id, field, value) => updatePatient({ perfilFarmaco: items.map(item => item.id === id ? { ...item, [field]: value } : item) });
+  const updateItemStatus = (id, estado) => {
+    const today = new Date().toISOString().split('T')[0];
+    const newList = items.map(item => {
+      if (item.id !== id) return item;
+      return {
+        ...item,
+        estado,
+        fechaSuspension: estado === 'Suspendido' ? (item.fechaSuspension || today) : ''
+      };
+    });
+    updatePatient({ perfilFarmaco: newList });
+  };
   const removeItem = (id) => updatePatient({ perfilFarmaco: items.filter(item => item.id !== id) });
   
   // --- Lógica para Soluciones Intravenosas ---
@@ -1988,6 +2000,19 @@ function PharmacotherapyTab({ patient, updatePatient }) {
     });
     updatePatient({ solucionesIV: newList });
   };
+
+  const updateSolucionStatus = (id, estado) => {
+    const today = new Date().toISOString().split('T')[0];
+    const newList = solItems.map(item => {
+      if (item.id !== id) return item;
+      return {
+        ...item,
+        estado,
+        fechaSuspension: estado === 'Suspendido' ? (item.fechaSuspension || today) : ''
+      };
+    });
+    updatePatient({ solucionesIV: newList });
+  };
   
   const removeSolucion = (id) => updatePatient({ solucionesIV: solItems.filter(item => item.id !== id) });
 
@@ -2014,9 +2039,9 @@ function PharmacotherapyTab({ patient, updatePatient }) {
         </label>
       </div>
 
-      <PharmaSection title="Terapia Antimicrobiana" items={atbs} updateItem={updateItem} removeItem={removeItem} patient={patient} theme="orange" />
-      <PharmaSection title="Medicamentos de Alto Riesgo" items={altos} updateItem={updateItem} removeItem={removeItem} patient={patient} theme="red" />
-      <PharmaSection title="Medicamentos Generales" items={gens} updateItem={updateItem} removeItem={removeItem} patient={patient} theme="blue" />
+      <PharmaSection title="Terapia Antimicrobiana" items={atbs} updateItem={updateItem} updateItemStatus={updateItemStatus} removeItem={removeItem} patient={patient} theme="orange" />
+      <PharmaSection title="Medicamentos de Alto Riesgo" items={altos} updateItem={updateItem} updateItemStatus={updateItemStatus} removeItem={removeItem} patient={patient} theme="red" />
+      <PharmaSection title="Medicamentos Generales" items={gens} updateItem={updateItem} updateItemStatus={updateItemStatus} removeItem={removeItem} patient={patient} theme="blue" />
       
       {/* SECCIÓN DE SOLUCIONES INTRAVENOSAS */}
       <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mb-6 print:border-slate-300 print:shadow-none mt-8">
@@ -2054,11 +2079,7 @@ function PharmacotherapyTab({ patient, updatePatient }) {
                     <td className="p-1"><input type="date" className={`w-full border-slate-300 rounded text-xs p-1 print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.fechaInicio} onChange={(e) => updateSolucion(item.id, 'fechaInicio', e.target.value)} /></td>
                     <td className="p-1 text-center font-bold text-slate-700">{item.fechaInicio ? dias : '-'}</td>
                     <td className="p-1">
-                      <select className={`w-full rounded text-xs p-1 font-bold print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-50 text-green-800 border-green-300'}`} value={item.estado} onChange={(e) => {
-                        updateSolucion(item.id, 'estado', e.target.value);
-                        if (e.target.value === 'Suspendido' && !item.fechaSuspension) updateSolucion(item.id, 'fechaSuspension', new Date().toISOString().split('T')[0]);
-                        if (e.target.value === 'Activo') updateSolucion(item.id, 'fechaSuspension', '');
-                      }}>
+                      <select className={`w-full rounded text-xs p-1 font-bold print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-50 text-green-800 border-green-300'}`} value={item.estado} onChange={(e) => updateSolucionStatus(item.id, e.target.value)}>
                         <option value="Activo">Activo</option>
                         <option value="Suspendido">Suspend</option>
                       </select>
@@ -2076,7 +2097,7 @@ function PharmacotherapyTab({ patient, updatePatient }) {
   );
 }
 
-function PharmaSection({ title, items, updateItem, removeItem, patient, theme }) {
+function PharmaSection({ title, items, updateItem, updateItemStatus, removeItem, patient, theme }) {
   const headerColors = { orange: 'bg-orange-100 text-orange-900 border-orange-200', red: 'bg-red-100 text-red-900 border-red-200', blue: 'bg-slate-100 text-slate-800 border-slate-200' };
 
   const sortedItems = [...items].sort((a, b) => {
@@ -2134,11 +2155,7 @@ function PharmaSection({ title, items, updateItem, removeItem, patient, theme })
                   </td>
 
                   <td className="p-1">
-                    <select className={`w-full rounded text-xs p-1 font-bold print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-50 text-green-800 border-green-300'}`} value={item.estado} onChange={(e) => {
-                      updateItem(item.id, 'estado', e.target.value);
-                      if (e.target.value === 'Suspendido' && !item.fechaSuspension) updateItem(item.id, 'fechaSuspension', new Date().toISOString().split('T')[0]);
-                      if (e.target.value === 'Activo') updateItem(item.id, 'fechaSuspension', '');
-                    }}>
+                    <select className={`w-full rounded text-xs p-1 font-bold print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-50 text-green-800 border-green-300'}`} value={item.estado} onChange={(e) => updateItemStatus(item.id, e.target.value)}>
                       <option value="Activo">Activo</option>
                       <option value="Suspendido">Suspend</option>
                     </select>
