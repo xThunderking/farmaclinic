@@ -14,6 +14,7 @@ dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
+const HOST = process.env.BIND_HOST || '127.0.0.1';
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -83,8 +84,8 @@ async function startServer() {
     await applySchema();
     await seedUsersIfEmpty();
 
-    app.listen(PORT, () => {
-      console.log(`API FarmaClinic corriendo en http://localhost:${PORT}`);
+    app.listen(PORT, HOST, () => {
+      console.log(`API FarmaClinic corriendo en http://${HOST}:${PORT}`);
     });
   } catch (error) {
     console.error('Error iniciando API MySQL:', error.message);

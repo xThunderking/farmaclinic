@@ -1,0 +1,20 @@
+services:
+  farmaclinic-db:
+    image: mysql:8.0
+    container_name: farmaclinic-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: CAMBIA_ROOT_PASSWORD
+      MYSQL_DATABASE: farmaclinic
+      MYSQL_USER: farmaclinic_app
+      MYSQL_PASSWORD: CAMBIA_APP_PASSWORD
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "127.0.0.1:3307:3306"
+    volumes:
+      - farmaclinic_db_data:/var/lib/mysql
+
+volumes:
+  farmaclinic_db_data:

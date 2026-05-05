@@ -1,0 +1,18 @@
+[Unit]
+Description=FarmaClinic API (coexistence profile)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=sistemas
+Group=sistemas
+WorkingDirectory=/home/sistemas/farmaclinic/backend
+Environment=NODE_ENV=production
+EnvironmentFile=/home/sistemas/farmaclinic/backend/.env.internal
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

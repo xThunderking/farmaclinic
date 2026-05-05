@@ -4,3 +4,5 @@ frontend/dist/
 backend/farmaclinic.sqlite
 backend/.env
 frontend/.env
+backend/.env.internal
+frontend/.env.production
