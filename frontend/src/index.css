@@ -2,6 +2,24 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer components {
+  .fc-panel {
+    @apply rounded-xl border border-slate-200 bg-white p-4 sm:p-5 shadow-sm;
+  }
+
+  .fc-label {
+    @apply mb-1 text-sm font-semibold text-slate-700;
+  }
+
+  .fc-input {
+    @apply w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-800 shadow-sm transition placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100;
+  }
+
+  .fc-textarea {
+    @apply w-full min-h-[76px] resize-y rounded-lg border border-slate-300 bg-slate-50 p-2 text-sm text-slate-800 shadow-sm transition placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100;
+  }
+}
+
 body {
   margin: 0;
 }

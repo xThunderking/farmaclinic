@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 
 // --- Constantes y Listas ---
-const PRESENTACIONES = ["Amp", "Fam", "Fco", "Cap", "Tab", "Sup", "Susp", "SL", "Jer Prell"];
+const PRESENTACIONES = ["Amp", "Fam", "Fco", "Cap", "Tab", "Sup", "Susp", "SL", "Jer Prell", "Pch", "Ovu"];
 const VIAS = ["IV", "IM", "VO", "SC", "Rectal", "Inh", "Tópica", "Oftálmica", "Ótica", "Vaginal", "SNG", "Nasal", "SL"];
 const CATEGORIAS_FARMACO = ["General", "Antibiótico", "Alto Riesgo"];
 const IDONEIDAD_OPCIONES = ["Pendiente", "Idóneo", "No Idóneo"];
@@ -20,6 +20,29 @@ const ESPECIALIDADES = [
   "Medicina interna", "Nefrología", "Neonatología", "Neumología", "Neurología", 
   "Oftalmología", "Oncología", "Traumatología y ortopedia", "Otorrinolaringología", "Pediatría", 
   "Plástica", "Psiquiatría", "Urología"
+];
+const COMORBILIDADES_PREDEFINIDAS = [
+  "Sin comorbilidades",
+  "Diabetes mellitus tipo 2",
+  "Hipertensión arterial sistémica",
+  "Dislipidemia",
+  "Obesidad",
+  "Insuficiencia renal crónica",
+  "Enfermedad renal crónica en hemodiálisis",
+  "Insuficiencia cardiaca",
+  "Cardiopatía isquémica",
+  "Fibrilación auricular",
+  "EPOC",
+  "Asma",
+  "Hipotiroidismo",
+  "Hipertiroidismo",
+  "Cirrosis hepática",
+  "Hepatopatía crónica",
+  "Enfermedad cerebrovascular previa",
+  "Demencia",
+  "Depresión",
+  "Cáncer activo",
+  "VIH"
 ];
 
 const MESES = [
@@ -73,10 +96,86 @@ const PREGUNTAS_ENTREVISTA = [
 ];
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const SESSION_USER_KEY = 'farmaclinic_current_user';
+const CLIENT_ID_KEY = 'farmaclinic_client_id';
+
+const safeStorageGet = (key) => {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+
+const safeStorageSet = (key, value) => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // ignore storage write errors
+  }
+};
+
+const safeStorageRemove = (key) => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // ignore storage remove errors
+  }
+};
+
+const getStoredSessionUser = () => {
+  const raw = safeStorageGet(SESSION_USER_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+};
+
+const getOrCreateClientId = () => {
+  const existing = safeStorageGet(CLIENT_ID_KEY);
+  if (existing) return existing;
+  const newId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  safeStorageSet(CLIENT_ID_KEY, newId);
+  return newId;
+};
+
+const hasMeaningfulValue = (value) => {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim() !== '';
+  if (typeof value === 'number') return !Number.isNaN(value);
+  if (typeof value === 'boolean') return true;
+  if (Array.isArray(value)) return value.some(hasMeaningfulValue);
+  if (typeof value === 'object') return Object.values(value).some(hasMeaningfulValue);
+  return false;
+};
+
+const formatPrintValue = (key, value) => {
+  if (!hasMeaningfulValue(value)) return '';
+  if (typeof value === 'boolean') return value ? 'Sí' : 'No';
+  if (typeof value === 'number') return String(value);
+  if (typeof value !== 'string') return String(value);
+
+  const cleaned = value.trim();
+  const shouldFormatDate = /(fecha|date|ingreso|egreso|inicio|suspension|muestra)/i.test(key || '');
+  if (shouldFormatDate && /^\d{4}-\d{2}-\d{2}/.test(cleaned)) {
+    return formatExcelDate(cleaned);
+  }
+  return cleaned;
+};
 
 const apiFetch = async (path, options = {}) => {
+  const clientId = getOrCreateClientId();
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-client-id': clientId,
+      ...(options.headers || {}),
+    },
     ...options,
   });
 
@@ -188,7 +287,7 @@ const initialPatients = [];
 // ==========================================
 export default function App() {
   const [users, setUsers] = useState(initialUsers);
-  const [currentUser, setCurrentUser] = useState(null);
+  const [currentUser, setCurrentUser] = useState(() => getStoredSessionUser());
 
   const [patients, setPatients] = useState(initialPatients);
   const [activePatientId, setActivePatientId] = useState(null);
@@ -199,6 +298,9 @@ export default function App() {
   const [syncError, setSyncError] = useState('');
   const loadedFromDbRef = useRef(false);
   const patientsSyncTimerRef = useRef(null);
+  const skipNextUsersSyncRef = useRef(false);
+  const skipNextPatientsSyncRef = useRef(false);
+  const remoteRefreshTimerRef = useRef(null);
 
   useEffect(() => {
     let mounted = true;
@@ -208,6 +310,7 @@ export default function App() {
         if (!mounted) return;
         setUsers(Array.isArray(data?.users) ? data.users : initialUsers);
         setPatients(Array.isArray(data?.patients) ? data.patients : []);
+        setSyncError('');
         loadedFromDbRef.current = true;
       } catch (_err) {
         if (!mounted) return;
@@ -224,7 +327,80 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!currentUser) {
+      safeStorageRemove(SESSION_USER_KEY);
+      return;
+    }
+    safeStorageSet(SESSION_USER_KEY, JSON.stringify(currentUser));
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (bootstrapping || !currentUser) return;
+    const refreshedUser = users.find((u) => u.id === currentUser.id);
+    if (!refreshedUser) {
+      setCurrentUser(null);
+      setViewingAdmin(false);
+      setActivePatientId(null);
+      return;
+    }
+    if (JSON.stringify(refreshedUser) !== JSON.stringify(currentUser)) {
+      setCurrentUser(refreshedUser);
+    }
+  }, [bootstrapping, users, currentUser]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof EventSource === 'undefined') return;
+
+    let disposed = false;
+    let eventSource;
+    let reconnectTimer;
+
+    const refreshFromServer = async () => {
+      try {
+        const data = await apiFetch('/api/bootstrap');
+        skipNextUsersSyncRef.current = true;
+        skipNextPatientsSyncRef.current = true;
+        setUsers(Array.isArray(data?.users) ? data.users : initialUsers);
+        setPatients(Array.isArray(data?.patients) ? data.patients : []);
+        setSyncError('');
+      } catch (_err) {
+        // ignore transient refresh errors; connection will retry
+      }
+    };
+
+    const scheduleRefresh = () => {
+      if (remoteRefreshTimerRef.current) clearTimeout(remoteRefreshTimerRef.current);
+      remoteRefreshTimerRef.current = setTimeout(refreshFromServer, 150);
+    };
+
+    const connect = () => {
+      const clientId = encodeURIComponent(getOrCreateClientId());
+      eventSource = new EventSource(`${API_BASE}/api/events?clientId=${clientId}`);
+      eventSource.addEventListener('users-updated', scheduleRefresh);
+      eventSource.addEventListener('patients-updated', scheduleRefresh);
+      eventSource.onerror = () => {
+        if (eventSource) eventSource.close();
+        if (!disposed) reconnectTimer = setTimeout(connect, 2000);
+      };
+    };
+
+    connect();
+
+    return () => {
+      disposed = true;
+      if (remoteRefreshTimerRef.current) clearTimeout(remoteRefreshTimerRef.current);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (eventSource) eventSource.close();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!loadedFromDbRef.current) return;
+    if (skipNextUsersSyncRef.current) {
+      skipNextUsersSyncRef.current = false;
+      return;
+    }
+
     apiFetch('/api/sync/users', {
       method: 'PUT',
       body: JSON.stringify({ users }),
@@ -233,6 +409,11 @@ export default function App() {
 
   useEffect(() => {
     if (!loadedFromDbRef.current) return;
+    if (skipNextPatientsSyncRef.current) {
+      skipNextPatientsSyncRef.current = false;
+      return;
+    }
+
     if (patientsSyncTimerRef.current) clearTimeout(patientsSyncTimerRef.current);
     patientsSyncTimerRef.current = setTimeout(() => {
       apiFetch('/api/sync/patients', {
@@ -315,7 +496,7 @@ export default function App() {
       pacienteBaseId: newId, 
       deleted: false,
       activeUsers: [currentUser.id], // Ingresamos directamente como activos
-      demographics: { identificadorInterno: initialData.identificadorInterno || '', numeroPaciente: initialData.numeroPaciente || '', numeroEpisodio: '', nombre: initialData.nombre || '', fechaNacimiento: initialData.fechaNacimiento || '', peso: '', altura: '', ingreso: ingresoFinal, egreso: '', tipoPaciente: '', especialidad: '', toxicomania: '', alcoholismo: '', observacionesGenerales: '' },
+      demographics: { identificadorInterno: initialData.identificadorInterno || '', numeroPaciente: initialData.numeroPaciente || '', numeroEpisodio: '', nombre: initialData.nombre || '', fechaNacimiento: initialData.fechaNacimiento || '', peso: '', altura: '', ingreso: ingresoFinal, egreso: '', tipoPaciente: '', especialidad: '', toxicomania: '', alcoholismo: '', comorbilidades: '', comorbilidadesTipo: '', observacionesGenerales: '' },
       labs: {}, interview: {}, conciliacion: { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false }, 
       perfilFarmacoMeta: { evaluadoPrevioPrimeraDosis: false },
       perfilFarmaco: [], solucionesIV: [], prms: [], interacciones: [], ram: [], microbiologia: []
@@ -551,12 +732,12 @@ export default function App() {
         </div>
 
         {/* Área Principal Interactiva */}
-        <div className="flex-1 overflow-auto p-4 md:p-8 bg-slate-100 print:hidden">
-          <div className="max-w-6xl mx-auto bg-white rounded-xl shadow-sm border border-slate-200 p-6 relative">
+        <div className="flex-1 overflow-auto p-3 sm:p-4 md:p-8 bg-slate-100 print:hidden">
+          <div className="max-w-6xl mx-auto bg-white rounded-xl shadow-sm border border-slate-200 p-4 sm:p-6 relative">
             
             {/* INDICADOR DE EDICIÓN COLABORATIVA EN TIEMPO REAL */}
             {otherActiveUserIds.length > 0 ? (
-               <div className="absolute top-0 right-0 bg-amber-100 text-amber-800 border-l border-b border-amber-200 px-4 py-1.5 text-xs font-bold rounded-bl-xl rounded-tr-xl flex items-center shadow-sm">
+              <div className="relative mb-4 sm:mb-0 sm:absolute sm:top-0 sm:right-0 bg-amber-100 text-amber-800 border border-amber-200 sm:border-l sm:border-b sm:border-t-0 sm:border-r-0 px-4 py-1.5 text-xs font-bold rounded-md sm:rounded-bl-xl sm:rounded-tr-xl flex items-center shadow-sm">
                   <div className="relative flex h-3 w-3 mr-2">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
@@ -564,7 +745,7 @@ export default function App() {
                   Editando simultáneamente con: <span className="ml-1 text-amber-900 underline">{otherActiveNames}</span>
                </div>
             ) : (
-               <div className="absolute top-0 right-0 bg-green-50 text-green-700 border-l border-b border-green-100 px-3 py-1 text-xs font-bold rounded-bl-xl rounded-tr-xl flex items-center">
+              <div className="relative mb-4 sm:mb-0 sm:absolute sm:top-0 sm:right-0 bg-green-50 text-green-700 border border-green-100 sm:border-l sm:border-b sm:border-t-0 sm:border-r-0 px-3 py-1 text-xs font-bold rounded-md sm:rounded-bl-xl sm:rounded-tr-xl flex items-center">
                   <CheckCircle className="w-3 h-3 mr-1" /> Solo tú estás editando este expediente.
                </div>
             )}
@@ -579,26 +760,329 @@ export default function App() {
           </div>
         </div>
 
-        {/* --- VISTA DE IMPRESIÓN (Oculta en UI, visible al Imprimir PDF) --- */}
-        <div className="hidden print:block print:w-full print:bg-white print:p-8 space-y-12">
-          <div className="border-b-2 border-slate-800 pb-4 mb-8">
-            <h1 className="text-3xl font-black text-slate-800 uppercase tracking-wider">Expediente Clínico Farmacoterapéutico</h1>
-            <div className="grid grid-cols-3 mt-4 text-sm text-slate-700">
-              <p><strong>Paciente:</strong> {activePatient.demographics.nombre}</p>
-              <p><strong>ID Interno:</strong> {activePatient.demographics.identificadorInterno} | <strong>Exp:</strong> {activePatient.demographics.numeroPaciente}</p>
-              <p><strong>Fecha Impresión:</strong> {new Date().toLocaleDateString()}</p>
-            </div>
-          </div>
-          
-          <div className="print-section"><DemographicsTab patient={activePatient} updatePatient={()=>{}} allPatients={[]} /></div>
-          <div className="print-section break-before-page"><ConciliationTab patient={activePatient} updatePatient={()=>{}} /></div>
-          <div className="print-section break-before-page"><PharmacotherapyTab patient={activePatient} updatePatient={()=>{}} /></div>
-          <div className="print-section break-before-page"><PrmTab patient={activePatient} updatePatient={()=>{}} /></div>
-          <div className="print-section break-before-page"><LabsTab patient={activePatient} updatePatient={()=>{}} /></div>
-          <div className="print-section break-before-page"><MicrobiologyTab patient={activePatient} updatePatient={()=>{}} /></div>
-          <div className="print-section"><RamTab patient={activePatient} updatePatient={()=>{}} /></div>
+        {/* --- VISTA DE IMPRESIÓN (solo campos con datos) --- */}
+        <div className="hidden print:block">
+          <PrintPatientReport patient={activePatient} />
         </div>
       </div>
+    </div>
+  );
+}
+
+function PrintKeyValueSection({ title, entries, columns = 2 }) {
+  const rows = (entries || []).filter((entry) => hasMeaningfulValue(entry.value));
+  if (!rows.length) return null;
+
+  return (
+    <section className="border border-slate-200 rounded-lg p-4 print:border-slate-300 print:break-inside-avoid">
+      <h2 className="text-lg font-bold text-slate-800 mb-3">{title}</h2>
+      <div className={`grid grid-cols-1 ${columns === 2 ? 'md:grid-cols-2' : 'md:grid-cols-1'} gap-x-6 gap-y-2 text-sm text-slate-700`}>
+        {rows.map((entry) => (
+          <p key={`${title}-${entry.label}`}>
+            <strong>{entry.label}:</strong> {formatPrintValue(entry.keyName || entry.label, entry.value)}
+          </p>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PrintObjectCardsSection({ title, items, fields }) {
+  const cards = (items || [])
+    .map((item, idx) => ({
+      idx,
+      values: fields
+        .map((field) => ({
+          label: field.label,
+          keyName: field.key,
+          value: item?.[field.key],
+        }))
+        .filter((entry) => hasMeaningfulValue(entry.value)),
+    }))
+    .filter((card) => card.values.length > 0);
+
+  if (!cards.length) return null;
+
+  return (
+    <section className="border border-slate-200 rounded-lg p-4 print:border-slate-300 space-y-3">
+      <h2 className="text-lg font-bold text-slate-800">{title}</h2>
+      {cards.map((card) => (
+        <div key={`${title}-${card.idx}`} className="border border-slate-200 rounded-md p-3 text-sm text-slate-700 print:break-inside-avoid">
+          <p className="font-semibold text-slate-800 mb-1">Registro {card.idx + 1}</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
+            {card.values.map((entry) => (
+              <p key={`${title}-${card.idx}-${entry.label}`}>
+                <strong>{entry.label}:</strong> {formatPrintValue(entry.keyName, entry.value)}
+              </p>
+            ))}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function PrintLabsSection({ labs }) {
+  const labGroups = Object.entries(labs || {})
+    .map(([param, rows]) => {
+      const cleanRows = (rows || [])
+        .map((row) => {
+          const parts = [
+            hasMeaningfulValue(row?.date) ? `Fecha: ${formatPrintValue('date', row.date)}` : '',
+            hasMeaningfulValue(row?.value) ? `Valor: ${row.value}` : '',
+            hasMeaningfulValue(row?.unit) ? `Unidad: ${row.unit}` : '',
+            hasMeaningfulValue(row?.min) ? `Min: ${row.min}` : '',
+            hasMeaningfulValue(row?.max) ? `Max: ${row.max}` : '',
+          ].filter(Boolean);
+          return parts.join(' | ');
+        })
+        .filter((line) => hasMeaningfulValue(line));
+
+      return { param, cleanRows };
+    })
+    .filter((group) => group.cleanRows.length > 0);
+
+  if (!labGroups.length) return null;
+
+  return (
+    <section className="border border-slate-200 rounded-lg p-4 print:border-slate-300">
+      <h2 className="text-lg font-bold text-slate-800 mb-3">Laboratorios</h2>
+      <div className="space-y-3 text-sm text-slate-700">
+        {labGroups.map((group) => (
+          <div key={group.param} className="border border-slate-200 rounded-md p-3 print:break-inside-avoid">
+            <p className="font-semibold text-slate-800 mb-1">{group.param}</p>
+            <ul className="list-disc ml-5 space-y-1">
+              {group.cleanRows.map((line, idx) => (
+                <li key={`${group.param}-${idx}`}>{line}</li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PrintPatientReport({ patient }) {
+  if (!patient) return null;
+
+  const d = patient.demographics || {};
+  const conc = patient.conciliacion || {};
+  const interview = patient.interview || {};
+
+  const interviewEntries = PREGUNTAS_ENTREVISTA
+    .map((q) => ({ label: q.text, keyName: q.id, value: interview[q.id] }))
+    .filter((entry) => hasMeaningfulValue(entry.value));
+
+  const concStatusEntries = [
+    {
+      label: 'Conciliación al ingreso',
+      keyName: 'ingreso',
+      value: conc.ingresoNA ? 'No aplica' : (conc.ingreso || []).length > 0 ? 'Realizada' : '',
+    },
+    {
+      label: 'Transición por área',
+      keyName: 'transicionArea',
+      value: conc.transicionAreaNA ? 'No aplica' : (conc.transicionesArea || []).length > 0 ? 'Realizada' : '',
+    },
+    {
+      label: 'Transición por médico',
+      keyName: 'transicionMedico',
+      value: conc.transicionMedicoNA ? 'No aplica' : conc.transicionMedico ? 'Realizada' : '',
+    },
+    {
+      label: 'Conciliación al egreso',
+      keyName: 'egreso',
+      value: conc.egresoNA ? 'No aplica' : (conc.egreso || []).length > 0 ? 'Realizada' : '',
+    },
+  ].filter((entry) => hasMeaningfulValue(entry.value));
+
+  return (
+    <div className="print:w-full print:bg-white print:p-8 space-y-5">
+      <div className="border-b-2 border-slate-800 pb-4 mb-2">
+        <h1 className="text-3xl font-black text-slate-800 uppercase tracking-wider">Expediente Clínico Farmacoterapéutico</h1>
+        <div className="mt-3 text-sm text-slate-700 space-y-1">
+          <p><strong>Paciente:</strong> {formatPrintValue('nombre', d.nombre) || 'Sin nombre'}</p>
+          {hasMeaningfulValue(d.identificadorInterno) && <p><strong>ID Interno:</strong> {d.identificadorInterno}</p>}
+          {hasMeaningfulValue(d.numeroPaciente) && <p><strong>Expediente:</strong> {d.numeroPaciente}</p>}
+          <p><strong>Fecha impresión:</strong> {new Date().toLocaleDateString()}</p>
+        </div>
+      </div>
+
+      <PrintKeyValueSection
+        title="Datos generales"
+        entries={[
+          { label: 'Número episodio', keyName: 'numeroEpisodio', value: d.numeroEpisodio },
+          { label: 'Fecha nacimiento', keyName: 'fechaNacimiento', value: d.fechaNacimiento },
+          { label: 'Género', keyName: 'genero', value: d.genero },
+          { label: 'Ingreso', keyName: 'ingreso', value: d.ingreso },
+          { label: 'Egreso', keyName: 'egreso', value: d.egreso },
+          { label: 'Habitación', keyName: 'habitacion', value: d.habitacion },
+          { label: 'Médico tratante', keyName: 'medico', value: d.medico },
+          { label: 'Tipo de paciente', keyName: 'tipoPaciente', value: d.tipoPaciente },
+          { label: 'Especialidad', keyName: 'especialidad', value: d.especialidad },
+        ]}
+      />
+
+      <PrintKeyValueSection
+        title="Datos clínicos"
+        entries={[
+          { label: 'Motivo de ingreso', keyName: 'motivoIngreso', value: d.motivoIngreso },
+          { label: 'Diagnóstico principal', keyName: 'diagnosticoPrincipal', value: d.diagnosticoPrincipal },
+          { label: 'Alergias', keyName: 'alergias', value: d.alergias },
+          { label: 'Intolerancias', keyName: 'intolerancias', value: d.intolerancias },
+          { label: 'Antecedentes', keyName: 'antecedentes', value: d.antecedentes },
+          { label: 'Comorbilidades', keyName: 'comorbilidades', value: d.comorbilidades },
+          { label: 'Observaciones generales', keyName: 'observacionesGenerales', value: d.observacionesGenerales },
+          { label: 'Peso (kg)', keyName: 'peso', value: d.peso },
+          { label: 'Altura (cm)', keyName: 'altura', value: d.altura },
+          { label: 'Tabaquismo', keyName: 'fuma', value: d.fuma },
+          { label: 'Alcoholismo', keyName: 'alcoholismo', value: d.alcoholismo },
+          { label: 'Toxicomanía', keyName: 'toxicomania', value: d.toxicomania },
+          { label: 'Detalles de adicciones', keyName: 'detallesAdicciones', value: d.detallesAdicciones },
+        ]}
+      />
+
+      <PrintKeyValueSection title="Entrevista de conciliación" entries={interviewEntries} columns={1} />
+      <PrintKeyValueSection title="Estado de conciliación" entries={concStatusEntries} />
+
+      <PrintObjectCardsSection
+        title="Conciliación al ingreso"
+        items={conc.ingreso || []}
+        fields={[
+          { key: 'principio', label: 'Principio activo' },
+          { key: 'marcaComercial', label: 'Marca comercial' },
+          { key: 'dosis', label: 'Dosis' },
+          { key: 'via', label: 'Vía' },
+          { key: 'desdeCuando', label: 'Desde cuándo' },
+          { key: 'activo', label: 'Estado' },
+          { key: 'diasTratamiento', label: 'Días tratamiento' },
+          { key: 'sabeParaQue', label: 'Sabe para qué' },
+          { key: 'observacion', label: 'Observación' },
+        ]}
+      />
+
+      <PrintObjectCardsSection
+        title="Conciliación al egreso"
+        items={conc.egreso || []}
+        fields={[
+          { key: 'principio', label: 'Principio activo' },
+          { key: 'marcaComercial', label: 'Marca comercial' },
+          { key: 'dosis', label: 'Dosis' },
+          { key: 'via', label: 'Vía' },
+          { key: 'desdeCuando', label: 'Desde cuándo' },
+          { key: 'activo', label: 'Estado' },
+          { key: 'diasTratamiento', label: 'Días tratamiento' },
+          { key: 'sabeParaQue', label: 'Sabe para qué' },
+          { key: 'observacion', label: 'Observación' },
+        ]}
+      />
+
+      <PrintObjectCardsSection
+        title="Transiciones por área"
+        items={conc.transicionesArea || []}
+        fields={[
+          { key: 'fecha', label: 'Fecha' },
+          { key: 'origen', label: 'Origen' },
+          { key: 'destino', label: 'Destino' },
+        ]}
+      />
+
+      <PrintObjectCardsSection
+        title="Perfil farmacoterapéutico"
+        items={patient.perfilFarmaco || []}
+        fields={[
+          { key: 'categoria', label: 'Categoría' },
+          { key: 'principio', label: 'Principio activo' },
+          { key: 'marcaComercial', label: 'Marca comercial' },
+          { key: 'presentacion', label: 'Presentación' },
+          { key: 'dosis', label: 'Dosis' },
+          { key: 'via', label: 'Vía' },
+          { key: 'frecuencia', label: 'Frecuencia' },
+          { key: 'fechaInicio', label: 'Fecha inicio' },
+          { key: 'idoneidad', label: 'Idoneidad' },
+          { key: 'estado', label: 'Estado' },
+          { key: 'fechaSuspension', label: 'Fecha suspensión' },
+          { key: 'observaciones', label: 'Observaciones' },
+        ]}
+      />
+
+      <PrintObjectCardsSection
+        title="Soluciones intravenosas"
+        items={patient.solucionesIV || []}
+        fields={[
+          { key: 'solucion', label: 'Solución' },
+          { key: 'volumen', label: 'Volumen (mL)' },
+          { key: 'tiempo', label: 'Tiempo (hr)' },
+          { key: 'velocidad', label: 'Velocidad (mL/hr)' },
+          { key: 'frecuencia', label: 'Frecuencia' },
+          { key: 'fechaInicio', label: 'Fecha inicio' },
+          { key: 'estado', label: 'Estado' },
+          { key: 'fechaSuspension', label: 'Fecha suspensión' },
+        ]}
+      />
+
+      <PrintObjectCardsSection
+        title="PRM"
+        items={patient.prms || []}
+        fields={[
+          { key: 'fecha', label: 'Fecha' },
+          { key: 'area', label: 'Área' },
+          { key: 'medicamento', label: 'Medicamento' },
+          { key: 'via', label: 'Vía' },
+          { key: 'grupo', label: 'Grupo' },
+          { key: 'descripcion', label: 'Descripción' },
+          { key: 'categoria', label: 'Categoría' },
+          { key: 'analisis', label: 'Análisis' },
+          { key: 'causaRaiz', label: 'Causa raíz' },
+          { key: 'intervencion', label: 'Intervención' },
+          { key: 'descIntervencion', label: 'Detalle intervención' },
+          { key: 'aceptacion', label: 'Aceptación' },
+          { key: 'resolucion', label: 'Resolución' },
+          { key: 'gravedad', label: 'Gravedad' },
+          { key: 'reportadoCalidad', label: 'Reportado calidad' },
+        ]}
+      />
+
+      <PrintObjectCardsSection
+        title="Interacciones medicamentosas"
+        items={patient.interacciones || []}
+        fields={[
+          { key: 'fecha', label: 'Fecha' },
+          { key: 'medicamentos', label: 'Medicamentos involucrados' },
+          { key: 'grado', label: 'Grado' },
+          { key: 'consecuencia', label: 'Consecuencia' },
+        ]}
+      />
+
+      <PrintLabsSection labs={patient.labs || {}} />
+
+      <PrintObjectCardsSection
+        title="Microbiología"
+        items={patient.microbiologia || []}
+        fields={[
+          { key: 'fechaMuestra', label: 'Fecha muestra' },
+          { key: 'tipoMuestra', label: 'Tipo muestra' },
+          { key: 'sitioCultivo', label: 'Sitio cultivo' },
+          { key: 'microorganismo', label: 'Microorganismo' },
+          { key: 'sensibles', label: 'Sensibles' },
+          { key: 'resistentes', label: 'Resistentes' },
+          { key: 'observaciones', label: 'Observaciones' },
+        ]}
+      />
+
+      <PrintObjectCardsSection
+        title="Reacciones adversas (RAM)"
+        items={patient.ram || []}
+        fields={[
+          { key: 'fecha', label: 'Fecha' },
+          { key: 'medicamento', label: 'Medicamento' },
+          { key: 'severidad', label: 'Severidad' },
+          { key: 'gravedad', label: 'Gravedad' },
+          { key: 'quePaso', label: 'Qué pasó' },
+          { key: 'queSeHizo', label: 'Qué se hizo' },
+        ]}
+      />
     </div>
   );
 }
@@ -680,7 +1164,7 @@ function NewPatientModal({ patients, onClose, onCreateNew, onCreateReingreso }) 
              <FormInput label="Fecha y Hora de Ingreso" type="datetime-local" value={formData.fechaIngreso} onChange={e => setFormData({...formData, fechaIngreso: e.target.value})} />
              
              <div className="grid grid-cols-2 gap-4">
-               <FormInput label="N° Paciente (Expediente)" value={formData.numeroPaciente} onChange={e => setFormData({...formData, numeroPaciente: e.target.value})} placeholder="Ej. PAC-001" />
+               <FormInput label="N° Paciente (Expediente)" value={formData.numeroPaciente} onChange={e => setFormData({...formData, numeroPaciente: e.target.value})} placeholder="Ingresa la HC" />
                <div className="flex flex-col">
                   <label className="text-sm font-semibold text-slate-600 mb-1 truncate">Identificador Interno (FV)</label>
                   <input type="text" readOnly value={formData.identificadorInterno} className="border-slate-300 rounded-md shadow-sm sm:text-sm px-3 py-2 bg-slate-100 text-slate-500 font-mono border cursor-not-allowed" title="Generado automáticamente por el sistema" />
@@ -865,21 +1349,21 @@ function AdminPanel({ users, setUsers, onClose, currentUser, onLogout }) {
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col">
       <TopBar currentUser={currentUser} onLogout={onLogout} isPatientView={true} onBack={onClose} />
-      <div className="flex-1 p-8">
+      <div className="flex-1 p-4 sm:p-6 md:p-8">
         <div className="max-w-5xl mx-auto">
-          <h1 className="text-3xl font-bold text-slate-800 mb-6">Administración de Usuarios</h1>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 col-span-1">
+          <h1 className="text-2xl sm:text-3xl font-bold text-slate-800 mb-6">Administración de Usuarios</h1>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8">
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 md:col-span-1">
               <h2 className="text-xl font-bold text-slate-800 mb-4">{editingId ? 'Editar Usuario' : 'Nuevo Usuario'}</h2>
               <div className="space-y-4">
                 <FormInput label="Nombre Completo" value={formData.nombre} onChange={e => setFormData({...formData, nombre: e.target.value})} />
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <FormInput label="Usuario (Login)" value={formData.username} onChange={e => setFormData({...formData, username: e.target.value})} />
                   <FormInput label="Contraseña" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} />
                 </div>
                 <FormSelect label="Rol de Sistema" value={formData.role} onChange={e => setFormData({...formData, role: e.target.value})} options={['user', 'admin']} />
                 <FormInput label="Puesto Clínico" value={formData.puesto} onChange={e => setFormData({...formData, puesto: e.target.value})} />
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <FormInput label="No. Empleado" value={formData.numEmpleado} onChange={e => setFormData({...formData, numEmpleado: e.target.value})} />
                   <FormSelect label="Horario" value={formData.horario} onChange={e => setFormData({...formData, horario: e.target.value})} options={['Matutino', 'Vespertino', 'Nocturno', 'Fin de Semana']} />
                 </div>
@@ -889,30 +1373,32 @@ function AdminPanel({ users, setUsers, onClose, currentUser, onLogout }) {
                 {editingId && <button onClick={() => {setEditingId(null); setFormData({ username: '', password: '', role: 'user', nombre: '', puesto: '', numEmpleado: '', horario: '' });}} className="w-full mt-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2 px-4 rounded-lg transition-colors">Cancelar</button>}
               </div>
             </div>
-            <div className="bg-white p-0 rounded-xl shadow-sm border border-slate-200 col-span-2 overflow-hidden">
-              <table className="min-w-full text-sm border-collapse">
-                <thead className="bg-slate-50 border-b">
-                  <tr>
-                    <th className="p-4 text-left font-semibold">Nombre y Puesto</th>
-                    <th className="p-4 text-left font-semibold">Usuario (Rol)</th>
-                    <th className="p-4 text-left font-semibold">Horario</th>
-                    <th className="p-4 text-center font-semibold">Acciones</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {users.map(u => (
-                    <tr key={u.id} className="border-b hover:bg-slate-50">
-                      <td className="p-4"><p className="font-bold text-slate-800">{u.nombre}</p><p className="text-xs text-slate-500">{u.puesto} | Emp: {u.numEmpleado}</p></td>
-                      <td className="p-4"><p className="font-medium text-blue-600">{u.username}</p><span className={`text-xs px-2 py-0.5 rounded-full ${u.role==='admin'?'bg-purple-100 text-purple-800':'bg-slate-100 text-slate-600'}`}>{u.role}</span></td>
-                      <td className="p-4 text-slate-600">{u.horario}</td>
-                      <td className="p-4 flex justify-center space-x-2">
-                        <button onClick={() => handleEdit(u)} className="text-blue-500 hover:bg-blue-50 p-2 rounded"><Settings className="w-4 h-4"/></button>
-                        {u.id !== currentUser.id && <button onClick={() => handleDelete(u.id)} className="text-red-500 hover:bg-red-50 p-2 rounded"><Trash2 className="w-4 h-4"/></button>}
-                      </td>
+            <div className="bg-white p-0 rounded-xl shadow-sm border border-slate-200 md:col-span-2 overflow-hidden">
+              <div className="overflow-x-auto print:overflow-visible">
+                <table className="min-w-[720px] w-full text-sm border-collapse">
+                  <thead className="bg-slate-50 border-b">
+                    <tr>
+                      <th className="p-4 text-left font-semibold">Nombre y Puesto</th>
+                      <th className="p-4 text-left font-semibold">Usuario (Rol)</th>
+                      <th className="p-4 text-left font-semibold">Horario</th>
+                      <th className="p-4 text-center font-semibold">Acciones</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {users.map(u => (
+                      <tr key={u.id} className="border-b hover:bg-slate-50">
+                        <td className="p-4"><p className="font-bold text-slate-800">{u.nombre}</p><p className="text-xs text-slate-500">{u.puesto} | Emp: {u.numEmpleado}</p></td>
+                        <td className="p-4"><p className="font-medium text-blue-600">{u.username}</p><span className={`text-xs px-2 py-0.5 rounded-full ${u.role==='admin'?'bg-purple-100 text-purple-800':'bg-slate-100 text-slate-600'}`}>{u.role}</span></td>
+                        <td className="p-4 text-slate-600">{u.horario}</td>
+                        <td className="p-4 flex justify-center space-x-2">
+                          <button onClick={() => handleEdit(u)} className="text-blue-500 hover:bg-blue-50 p-2 rounded"><Settings className="w-4 h-4"/></button>
+                          {u.id !== currentUser.id && <button onClick={() => handleDelete(u.id)} className="text-red-500 hover:bg-red-50 p-2 rounded"><Trash2 className="w-4 h-4"/></button>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>
@@ -1118,21 +1604,21 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
   };
 
   return (
-    <div className="flex-1 p-8 relative">
+    <div className="flex-1 p-4 sm:p-6 md:p-8 relative">
       <div className="max-w-7xl mx-auto">
         
         {/* TABS DE DASHBOARD */}
         <div className="flex flex-wrap gap-2 border-b border-slate-300 mb-6">
-           <button onClick={() => setDashboardTab('pacientes')} className={`pb-3 px-2 text-lg transition-colors flex items-center ${dashboardTab === 'pacientes' ? 'border-b-4 border-blue-600 font-bold text-blue-800' : 'text-slate-500 hover:text-slate-700'}`}>
+           <button onClick={() => setDashboardTab('pacientes')} className={`pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'pacientes' ? 'border-b-4 border-blue-600 font-bold text-blue-800' : 'text-slate-500 hover:text-slate-700'}`}>
              <Users className="w-5 h-5 mr-2"/> Censo de Pacientes
            </button>
-           <button onClick={() => setDashboardTab('prms')} className={`pb-3 px-2 text-lg transition-colors flex items-center ${dashboardTab === 'prms' ? 'border-b-4 border-orange-500 font-bold text-orange-700' : 'text-slate-500 hover:text-slate-700'}`}>
+           <button onClick={() => setDashboardTab('prms')} className={`pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'prms' ? 'border-b-4 border-orange-500 font-bold text-orange-700' : 'text-slate-500 hover:text-slate-700'}`}>
              <PieChart className="w-5 h-5 mr-2"/> Monitor de PRM
            </button>
-           <button onClick={() => setDashboardTab('proa')} className={`pb-3 px-2 text-lg transition-colors flex items-center ${dashboardTab === 'proa' ? 'border-b-4 border-purple-500 font-bold text-purple-700' : 'text-slate-500 hover:text-slate-700'}`}>
+           <button onClick={() => setDashboardTab('proa')} className={`pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'proa' ? 'border-b-4 border-purple-500 font-bold text-purple-700' : 'text-slate-500 hover:text-slate-700'}`}>
              <Bug className="w-5 h-5 mr-2"/> PROA (Microbiología)
            </button>
-           <button onClick={() => setDashboardTab('calidad')} className={`pb-3 px-2 text-lg transition-colors flex items-center ${dashboardTab === 'calidad' ? 'border-b-4 border-emerald-500 font-bold text-emerald-700' : 'text-slate-500 hover:text-slate-700'}`}>
+           <button onClick={() => setDashboardTab('calidad')} className={`pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'calidad' ? 'border-b-4 border-emerald-500 font-bold text-emerald-700' : 'text-slate-500 hover:text-slate-700'}`}>
              <CheckSquare className="w-5 h-5 mr-2"/> Calidad y Conciliación
            </button>
         </div>
@@ -1156,17 +1642,17 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
             </div>
 
             {/* Barra de Controles (Vistas y Filtros) */}
-            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0">
-              <div className="flex space-x-1 bg-slate-100 p-1 rounded-lg">
-                <button onClick={() => setView('activos')} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${view === 'activos' ? 'bg-white text-blue-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Pacientes Activos</button>
-                <button onClick={() => setView('egresados')} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${view === 'egresados' ? 'bg-white text-blue-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Egresados</button>
-                <button onClick={() => setView('papelera')} className={`px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center ${view === 'papelera' ? 'bg-red-50 text-red-700 shadow-sm border border-red-200' : 'text-slate-600 hover:text-red-600'}`}><Trash2 className="w-4 h-4 mr-1"/> Papelera</button>
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-col md:flex-row justify-between md:items-center gap-4">
+              <div className="flex flex-wrap gap-1 bg-slate-100 p-1 rounded-lg w-full md:w-auto">
+                <button onClick={() => setView('activos')} className={`px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${view === 'activos' ? 'bg-white text-blue-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Pacientes Activos</button>
+                <button onClick={() => setView('egresados')} className={`px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${view === 'egresados' ? 'bg-white text-blue-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Egresados</button>
+                <button onClick={() => setView('papelera')} className={`px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-colors flex items-center ${view === 'papelera' ? 'bg-red-50 text-red-700 shadow-sm border border-red-200' : 'text-slate-600 hover:text-red-600'}`}><Trash2 className="w-4 h-4 mr-1"/> Papelera</button>
               </div>
               
-              <div className="flex flex-wrap gap-2 items-center">
+              <div className="flex flex-wrap gap-2 items-center w-full md:w-auto">
                 <div className="relative">
                   <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-                  <input type="text" placeholder="Buscar ID o paciente..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm shadow-sm w-48" />
+                  <input type="text" placeholder="Buscar ID o paciente..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm shadow-sm w-full sm:w-48" />
                 </div>
                 <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)} className="py-2 px-3 border border-slate-300 rounded-lg text-sm shadow-sm text-slate-700">
                   <option value="">Mes (Todos)</option>{MESES.map(m => <option key={m.val} value={m.val}>{m.label}</option>)}
@@ -1175,26 +1661,27 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                   <option value="">Año (Todos)</option>{ANIOS.map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
                 
-                <button onClick={handleExportGeneral} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg flex items-center font-medium shadow-sm transition ml-2 text-sm" title="Exportar Demográficos y Clínicos"><FileSpreadsheet className="w-4 h-4 mr-2" /> Exportar General</button>
+                <button onClick={handleExportGeneral} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg flex items-center font-medium shadow-sm transition text-sm" title="Exportar Demográficos y Clínicos"><FileSpreadsheet className="w-4 h-4 mr-2" /> Exportar General</button>
 
-                {view !== 'papelera' && <button onClick={onCreate} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center font-medium shadow-sm transition text-sm ml-2"><UserPlus className="w-4 h-4 mr-2" /> Nuevo</button>}
+                {view !== 'papelera' && <button onClick={onCreate} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center font-medium shadow-sm transition text-sm"><UserPlus className="w-4 h-4 mr-2" /> Nuevo</button>}
               </div>
             </div>
 
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-slate-800 text-white border-b border-slate-700">
-                  <tr>
-                    <th className="p-3 font-semibold text-sm w-24">Ingreso</th>
-                    <th className="p-3 font-semibold text-sm">Paciente y Alertas clínicas</th>
-                    <th className="p-3 font-semibold text-sm">Ubicación y Médico</th>
-                    <th className="p-3 font-semibold text-sm">Diagnóstico Principal</th>
-                    <th className="p-3 font-semibold text-sm text-center">Estancia</th>
-                    <th className="p-3 font-semibold text-sm text-center" title="Medicamentos Activos / Total">Meds (Act.)</th>
-                    <th className="p-3 font-semibold text-sm text-center">Acciones</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <div className="overflow-x-auto print:overflow-visible">
+                <table className="min-w-[1100px] w-full text-left border-collapse">
+                  <thead className="bg-slate-800 text-white border-b border-slate-700">
+                    <tr>
+                      <th className="p-3 font-semibold text-sm w-24">Ingreso</th>
+                      <th className="p-3 font-semibold text-sm">Paciente y Alertas clínicas</th>
+                      <th className="p-3 font-semibold text-sm">Ubicación y Médico</th>
+                      <th className="p-3 font-semibold text-sm">Diagnóstico Principal</th>
+                      <th className="p-3 font-semibold text-sm text-center">Estancia</th>
+                      <th className="p-3 font-semibold text-sm text-center" title="Medicamentos Activos / Total">Meds (Act.)</th>
+                      <th className="p-3 font-semibold text-sm text-center">Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody>
                   {filteredPatients.length === 0 && <tr><td colSpan="7" className="p-8 text-center text-slate-500">No hay registros para esta vista o filtros seleccionados.</td></tr>}
                   {filteredPatients.map(p => {
                     const { years } = calculateAge(p.demographics.fechaNacimiento);
@@ -1289,8 +1776,9 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                       </tr>
                     );
                   })}
-                </tbody>
-              </table>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </>
         )}
@@ -1331,24 +1819,25 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                  <option value="Grave">Grave</option><option value="Letal">Letal</option>
                </select>
 
-               <div className="flex-1 text-right">
+               <div className="w-full sm:flex-1 sm:text-right">
                   <button onClick={handleExportPRMsAndInteractions} className="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded-lg inline-flex items-center font-medium shadow-sm transition text-sm" title="Exportar Base de Datos de PRMs"><FileWarning className="w-4 h-4 mr-2" /> Exportar a Excel</button>
                </div>
             </div>
 
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-slate-800 text-white border-b border-slate-700">
-                  <tr>
-                    <th className="p-3 font-semibold text-sm w-24">Fecha</th>
-                    <th className="p-3 font-semibold text-sm">Paciente</th>
-                    <th className="p-3 font-semibold text-sm">Categoría y Análisis</th>
-                    <th className="p-3 font-semibold text-sm">Medicamento Involucrado</th>
-                    <th className="p-3 font-semibold text-sm text-center">Intervención</th>
-                    <th className="p-3 font-semibold text-sm text-center">Estatus y Gravedad</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <div className="overflow-x-auto print:overflow-visible">
+                <table className="min-w-[980px] w-full text-left border-collapse">
+                  <thead className="bg-slate-800 text-white border-b border-slate-700">
+                    <tr>
+                      <th className="p-3 font-semibold text-sm w-24">Fecha</th>
+                      <th className="p-3 font-semibold text-sm">Paciente</th>
+                      <th className="p-3 font-semibold text-sm">Categoría y Análisis</th>
+                      <th className="p-3 font-semibold text-sm">Medicamento Involucrado</th>
+                      <th className="p-3 font-semibold text-sm text-center">Intervención</th>
+                      <th className="p-3 font-semibold text-sm text-center">Estatus y Gravedad</th>
+                    </tr>
+                  </thead>
+                  <tbody>
                   {allPrms.length === 0 && <tr><td colSpan="6" className="p-8 text-center text-slate-500">No hay PRMs registrados con los filtros actuales.</td></tr>}
                   {allPrms.map((prm, idx) => {
                     const originalPatient = patients.find(px => px.id === prm.patientId);
@@ -1379,8 +1868,9 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                       </td>
                     </tr>
                   )})}
-                </tbody>
-              </table>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </>
         )}
@@ -1412,23 +1902,24 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                  <option value="">Año (Todos)</option>{ANIOS.map(y => <option key={y} value={y}>{y}</option>)}
                </select>
 
-               <div className="flex-1 text-right">
+               <div className="w-full sm:flex-1 sm:text-right">
                   <button onClick={handleExportPROA} className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg inline-flex items-center font-medium shadow-sm transition text-sm" title="Exportar Aislamientos PROA"><FileSpreadsheet className="w-4 h-4 mr-2" /> Exportar PROA</button>
                </div>
             </div>
 
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-slate-800 text-white border-b border-slate-700">
-                  <tr>
-                    <th className="p-3 font-semibold text-sm w-24">Fecha</th>
-                    <th className="p-3 font-semibold text-sm">Paciente</th>
-                    <th className="p-3 font-semibold text-sm">Muestra y Sitio</th>
-                    <th className="p-3 font-semibold text-sm text-purple-200">Microorganismo Aislado</th>
-                    <th className="p-3 font-semibold text-sm text-red-200">Resistencias Notables</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <div className="overflow-x-auto print:overflow-visible">
+                <table className="min-w-[950px] w-full text-left border-collapse">
+                  <thead className="bg-slate-800 text-white border-b border-slate-700">
+                    <tr>
+                      <th className="p-3 font-semibold text-sm w-24">Fecha</th>
+                      <th className="p-3 font-semibold text-sm">Paciente</th>
+                      <th className="p-3 font-semibold text-sm">Muestra y Sitio</th>
+                      <th className="p-3 font-semibold text-sm text-purple-200">Microorganismo Aislado</th>
+                      <th className="p-3 font-semibold text-sm text-red-200">Resistencias Notables</th>
+                    </tr>
+                  </thead>
+                  <tbody>
                   {allMicros.length === 0 && <tr><td colSpan="5" className="p-8 text-center text-slate-500">No hay cultivos registrados con los filtros actuales.</td></tr>}
                   {allMicros.map((mic, idx) => {
                     const originalPatient = patients.find(px => px.id === mic.patientId);
@@ -1459,8 +1950,9 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                       </td>
                     </tr>
                   )})}
-                </tbody>
-              </table>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </>
         )}
@@ -1502,24 +1994,25 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                  <option value="">Año (Todos)</option>{ANIOS.map(y => <option key={y} value={y}>{y}</option>)}
                </select>
 
-               <div className="flex-1 text-right">
+               <div className="w-full sm:flex-1 sm:text-right">
                   <button onClick={handleExportGeneral} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg inline-flex items-center font-medium shadow-sm transition text-sm" title="Exportar métricas e información general"><FileSpreadsheet className="w-4 h-4 mr-2" /> Exportar KPIs de Calidad</button>
                </div>
             </div>
 
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-slate-800 text-white border-b border-slate-700">
-                  <tr>
-                    <th className="p-3 font-semibold text-sm">Paciente y Expediente</th>
-                    <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">Validación Idoneidad<br/><span className="text-[10px] font-normal text-slate-300">(Previo 1ra Dosis)</span></th>
-                    <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">1. Conciliación<br/>al Ingreso</th>
-                    <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">2. Transición<br/>de Área</th>
-                    <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">3. Transición<br/>de Médico</th>
-                    <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">4. Conciliación<br/>al Egreso</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <div className="overflow-x-auto print:overflow-visible">
+                <table className="min-w-[980px] w-full text-left border-collapse">
+                  <thead className="bg-slate-800 text-white border-b border-slate-700">
+                    <tr>
+                      <th className="p-3 font-semibold text-sm">Paciente y Expediente</th>
+                      <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">Validación Idoneidad<br/><span className="text-[10px] font-normal text-slate-300">(Previo 1ra Dosis)</span></th>
+                      <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">1. Conciliación<br/>al Ingreso</th>
+                      <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">2. Transición<br/>de Área</th>
+                      <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">3. Transición<br/>de Médico</th>
+                      <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">4. Conciliación<br/>al Egreso</th>
+                    </tr>
+                  </thead>
+                  <tbody>
                   {filteredPatients.length === 0 && <tr><td colSpan="6" className="p-8 text-center text-slate-500">No hay registros para mostrar.</td></tr>}
                   {filteredPatients.map((p, idx) => {
                     const idoneidadDone = p.perfilFarmacoMeta?.evaluadoPrevioPrimeraDosis;
@@ -1561,8 +2054,9 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                       </tr>
                     );
                   })}
-                </tbody>
-              </table>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </>
         )}
@@ -1585,6 +2079,23 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
   const pesoAjustado = calculateAdjustedWeight(d.peso, pesoIdeal);
 
   const handleChange = (e) => updatePatient({ demographics: { ...d, [e.target.name]: e.target.value } });
+
+  const comorbidityValue = (d.comorbilidades || '').trim();
+  const isComorbidityPredefined = COMORBILIDADES_PREDEFINIDAS.includes(comorbidityValue);
+  const comorbiditySelectValue = d.comorbilidadesTipo || (comorbidityValue ? (isComorbidityPredefined ? comorbidityValue : 'OTRO') : '');
+
+  const handleComorbiditySelectChange = (e) => {
+    const selected = e.target.value;
+    if (selected === 'OTRO') {
+      updatePatient({ demographics: { ...d, comorbilidadesTipo: 'OTRO', comorbilidades: isComorbidityPredefined ? '' : comorbidityValue } });
+      return;
+    }
+    updatePatient({ demographics: { ...d, comorbilidadesTipo: selected, comorbilidades: selected } });
+  };
+
+  const handleComorbidityOtherChange = (e) => {
+    updatePatient({ demographics: { ...d, comorbilidadesTipo: 'OTRO', comorbilidades: e.target.value } });
+  };
 
   // DETECCIÓN DE DUPLICADOS EN TIEMPO REAL (Solo por Nombre y Fecha de Nacimiento)
   const possibleDuplicates = allPatients.filter(p => {
@@ -1635,7 +2146,7 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* ALERTA DE DUPLICIDAD */}
       {possibleDuplicates.length > 0 && !patient.pacienteBaseId && (
         <div className="bg-amber-50 border-l-4 border-amber-500 p-4 mb-6 rounded-r-md flex flex-col md:flex-row justify-between items-start md:items-center shadow-sm print:hidden">
@@ -1649,12 +2160,12 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
         </div>
       )}
 
-      <section>
+      <section className="fc-panel print:bg-transparent print:border-none print:p-0 print:shadow-none">
         <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-1 text-blue-800 print:text-black">1. Identificación y Ubicación</h3>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
           <div className="flex flex-col">
-            <label className="text-sm font-semibold text-slate-600 mb-1 truncate">Identificador Interno (FV)</label>
-            <input type="text" name="identificadorInterno" readOnly value={d.identificadorInterno || ''} className="border-slate-300 rounded-md shadow-sm sm:text-sm px-3 py-2 bg-slate-100 text-slate-500 font-mono border cursor-not-allowed" title="ID Auto-generado por el sistema" />
+            <label className="fc-label truncate">Identificador Interno (FV)</label>
+            <input type="text" name="identificadorInterno" readOnly value={d.identificadorInterno || ''} className="fc-input bg-slate-100 text-slate-500 font-mono border cursor-not-allowed" title="ID Auto-generado por el sistema" />
           </div>
           <FormInput label="No. de Paciente (Expediente)" name="numeroPaciente" value={d.numeroPaciente} onChange={handleChange} />
           <FormInput label="No. de Episodio" name="numeroEpisodio" value={d.numeroEpisodio} onChange={handleChange} />
@@ -1667,7 +2178,7 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
         </div>
       </section>
 
-      <section>
+      <section className="fc-panel print:bg-transparent print:border-none print:p-0 print:shadow-none">
         <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-1 text-blue-800 print:text-black">2. Clínica y Hospitalización</h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <FormSelect label="Género" name="genero" value={d.genero} onChange={handleChange} options={["Masculino", "Femenino"]} />
@@ -1683,20 +2194,36 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
           <FormInput label="Diagnóstico Principal" name="diagnosticoPrincipal" value={d.diagnosticoPrincipal} onChange={handleChange} />
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-          <div className="flex flex-col"><label className="text-sm font-semibold text-slate-600 mb-1">Antecedentes Médicos</label><textarea name="antecedentes" value={d.antecedentes || ''} onChange={handleChange} rows={2} className="border-slate-300 rounded-md shadow-sm sm:text-sm p-2"></textarea></div>
-          <div className="flex flex-col"><label className="text-sm font-semibold text-slate-600 mb-1">Comorbilidades Actuales</label><textarea name="comorbilidades" value={d.comorbilidades || ''} onChange={handleChange} rows={2} className="border-slate-300 rounded-md shadow-sm sm:text-sm p-2"></textarea></div>
+          <div className="flex flex-col"><label className="fc-label">Antecedentes Médicos</label><textarea name="antecedentes" value={d.antecedentes || ''} onChange={handleChange} rows={2} className="fc-textarea"></textarea></div>
+          <div className="flex flex-col">
+            <label className="fc-label">Comorbilidades Actuales</label>
+            <select value={comorbiditySelectValue} onChange={handleComorbiditySelectChange} className="fc-input">
+              <option value="">Sel...</option>
+              {COMORBILIDADES_PREDEFINIDAS.map((item) => <option key={item} value={item}>{item}</option>)}
+              <option value="OTRO">OTRO</option>
+            </select>
+            {comorbiditySelectValue === 'OTRO' && (
+              <input
+                type="text"
+                value={d.comorbilidades || ''}
+                onChange={handleComorbidityOtherChange}
+                placeholder="Especificar comorbilidad..."
+                className="fc-input mt-2"
+              />
+            )}
+          </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <FormInput label="Alergias" name="alergias" value={d.alergias} onChange={handleChange} />
           <FormInput label="Intolerancias" name="intolerancias" value={d.intolerancias} onChange={handleChange} />
         </div>
         <div className="flex flex-col mb-4">
-          <label className="text-sm font-semibold text-slate-600 mb-1">Observaciones Generales Clínicas</label>
-          <textarea name="observacionesGenerales" value={d.observacionesGenerales || ''} onChange={handleChange} rows={3} className="border-slate-300 rounded-md shadow-sm sm:text-sm p-2" placeholder="Cualquier otra observación relevante sobre el paciente..."></textarea>
+          <label className="fc-label">Observaciones Generales Clínicas</label>
+          <textarea name="observacionesGenerales" value={d.observacionesGenerales || ''} onChange={handleChange} rows={3} className="fc-textarea" placeholder="Cualquier otra observación relevante sobre el paciente..."></textarea>
         </div>
       </section>
 
-      <section>
+      <section className="fc-panel print:bg-transparent print:border-none print:p-0 print:shadow-none">
          <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-1 text-blue-800 print:text-black">3. Hábitos y Estilo de Vida</h3>
          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
             <FormSelect label="¿Tabaquismo?" name="fuma" value={d.fuma} onChange={handleChange} options={["Sí", "No"]} />
@@ -1705,13 +2232,13 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
          </div>
          {(d.alcoholismo === 'Sí' || d.toxicomania === 'Sí' || d.fuma === 'Sí') && (
             <div className="flex flex-col mb-4">
-              <label className="text-sm font-semibold text-slate-600 mb-1">Detallar consumo (Frecuencia, cantidad, etc.)</label>
-              <textarea name="detallesAdicciones" value={d.detallesAdicciones || ''} onChange={handleChange} rows={2} className="border-slate-300 rounded-md shadow-sm sm:text-sm p-2 bg-amber-50"></textarea>
+              <label className="fc-label">Detallar consumo (Frecuencia, cantidad, etc.)</label>
+              <textarea name="detallesAdicciones" value={d.detallesAdicciones || ''} onChange={handleChange} rows={2} className="fc-textarea bg-amber-50"></textarea>
             </div>
          )}
       </section>
 
-      <section>
+      <section className="fc-panel print:bg-transparent print:border-none print:p-0 print:shadow-none">
         <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-1 text-blue-800 print:text-black">4. Antropometría Farmacocinética</h3>
         <div className="grid grid-cols-2 md:grid-cols-7 gap-4 items-end">
           <div className="flex flex-col justify-end">
@@ -1776,16 +2303,16 @@ function ConciliationTab({ patient, updatePatient }) {
 
   return (
     <div className="space-y-8">
-      <section>
+      <section className="fc-panel print:bg-transparent print:border-none print:p-0 print:shadow-none">
         <h2 className="text-2xl font-bold text-slate-800 border-b pb-2 mb-4">1. Entrevista de conciliación</h2>
         {sections.map(sec => (
           <div key={sec} className="mb-4 print:mb-2">
             <h3 className="text-sm font-bold uppercase text-slate-500 mb-2">{sec}</h3>
             <div className="space-y-2">
               {PREGUNTAS_ENTREVISTA.filter(q => q.section === sec).map(q => (
-                <div key={q.id} className="flex flex-col md:flex-row md:items-center justify-between bg-white border border-slate-200 rounded-lg p-3 shadow-sm print:shadow-none print:border-b print:bg-transparent">
+                <div key={q.id} className="flex flex-col md:flex-row md:items-center justify-between bg-slate-50 border border-slate-200 rounded-xl p-3 shadow-sm print:shadow-none print:border-b print:bg-transparent">
                   <span className="text-slate-700 text-sm font-medium md:w-1/2 mb-2 md:mb-0">{q.text}</span>
-                  <input type="text" className="border-slate-300 rounded-md shadow-sm flex-1 md:ml-4 text-sm" placeholder="Respuesta detallada..." value={i[q.id] || ''} onChange={(e) => handleAnswer(q.id, e.target.value)} />
+                  <input type="text" className="fc-input flex-1 md:ml-4" placeholder="Respuesta detallada..." value={i[q.id] || ''} onChange={(e) => handleAnswer(q.id, e.target.value)} />
                 </div>
               ))}
             </div>
@@ -1793,11 +2320,11 @@ function ConciliationTab({ patient, updatePatient }) {
         ))}
       </section>
 
-      <section>
-        <div className="flex justify-between items-center border-b pb-2 mb-2">
+      <section className="fc-panel print:bg-transparent print:border-none print:p-0 print:shadow-none">
+        <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center border-b pb-2 mb-2">
           <h2 className="text-2xl font-bold text-slate-800">2. Conciliación al Ingreso</h2>
           {!conc.ingresoNA && (
-            <button onClick={() => addItem('ingreso')} className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm flex items-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
+            <button onClick={() => addItem('ingreso')} className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded text-sm flex items-center justify-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
           )}
         </div>
         <label className="flex items-center space-x-2 text-sm text-slate-600 mb-4 cursor-pointer w-max print:mb-2">
@@ -1812,14 +2339,14 @@ function ConciliationTab({ patient, updatePatient }) {
         )}
       </section>
 
-      <section className="bg-slate-100 p-4 rounded-xl border border-slate-200 print:bg-transparent print:border-none print:p-0">
+      <section className="fc-panel bg-slate-50 print:bg-transparent print:border-none print:p-0 print:shadow-none">
         <h2 className="text-lg font-bold text-slate-800 mb-3 flex items-center print:border-b print:pb-2 print:mb-2"><CheckCircle className="w-5 h-5 mr-2 text-blue-600 print:text-black" /> 3. Conciliación de Transición (Checklist)</h2>
         <div className="flex flex-col space-y-4">
           
           <div className="bg-white p-4 rounded-lg border border-slate-200 print:border-b print:rounded-none">
-            <div className="flex justify-between items-center mb-3 border-b pb-2 print:border-none">
+            <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center mb-3 border-b pb-2 print:border-none">
               <span className="font-medium text-slate-700">Se realizó conciliación por Cambio de Área</span>
-              <button onClick={addTransicionArea} className="text-xs bg-blue-100 hover:bg-blue-200 text-blue-700 px-3 py-1.5 rounded font-bold transition flex items-center print:hidden" disabled={conc.transicionAreaNA}>
+              <button onClick={addTransicionArea} className="w-full sm:w-auto text-xs bg-blue-100 hover:bg-blue-200 text-blue-700 px-3 py-1.5 rounded font-bold transition flex items-center justify-center print:hidden" disabled={conc.transicionAreaNA}>
                 <Plus className="w-3 h-3 mr-1" /> Registrar Cambio
               </button>
             </div>
@@ -1864,11 +2391,11 @@ function ConciliationTab({ patient, updatePatient }) {
         </div>
       </section>
 
-      <section>
-        <div className="flex justify-between items-center border-b pb-2 mb-2">
+      <section className="fc-panel print:bg-transparent print:border-none print:p-0 print:shadow-none">
+        <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center border-b pb-2 mb-2">
           <h2 className="text-2xl font-bold text-slate-800">4. Conciliación al Egreso</h2>
           {!conc.egresoNA && (
-            <button onClick={() => addItem('egreso')} className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm flex items-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
+            <button onClick={() => addItem('egreso')} className="w-full sm:w-auto bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-sm flex items-center justify-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
           )}
         </div>
         <label className="flex items-center space-x-2 text-sm text-slate-600 mb-4 cursor-pointer w-max print:mb-2">
@@ -1889,8 +2416,8 @@ function ConciliationTab({ patient, updatePatient }) {
 function ConciliationTable({ items, type, onUpdate, onRemove }) {
   const isIngreso = type === 'ingreso';
   return (
-    <div className="overflow-x-auto print:overflow-visible">
-      <table className="min-w-full text-sm border-collapse bg-white border border-slate-200 shadow-sm rounded-lg print:shadow-none print:border-slate-300">
+    <div className="overflow-x-auto overscroll-x-contain print:overflow-visible">
+      <table className="min-w-[980px] text-xs sm:text-sm border-collapse bg-white border border-slate-200 shadow-sm rounded-lg print:shadow-none print:border-slate-300">
         <thead className="bg-slate-50 border-b print:bg-slate-100">
           <tr>
             <th className="p-2 text-left font-semibold">Principio Activo</th>
@@ -2024,16 +2551,16 @@ function PharmacotherapyTab({ patient, updatePatient }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center border-b pb-2">
+      <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center border-b pb-2">
         <h2 className="text-2xl font-bold text-slate-800">Prescripciones Intrahospitalarias</h2>
-        <div className="flex space-x-2">
-           <button onClick={addSolucion} className="bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-2 rounded text-sm flex items-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Solución IV</button>
-           <button onClick={addItem} className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm flex items-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
+        <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+           <button onClick={addSolucion} className="w-full sm:w-auto bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Solución IV</button>
+           <button onClick={addItem} className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
         </div>
       </div>
 
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 flex justify-end shadow-sm print:bg-transparent print:border-none print:shadow-none mb-4">
-        <label className="flex items-center space-x-2 cursor-pointer bg-white px-3 py-1.5 rounded-md shadow-sm border border-blue-200 print:border-none print:shadow-none print:bg-transparent print:p-0">
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 flex justify-start sm:justify-end shadow-sm print:bg-transparent print:border-none print:shadow-none mb-4">
+        <label className="flex items-center space-x-2 cursor-pointer bg-white px-3 py-1.5 rounded-md shadow-sm border border-blue-200 print:border-none print:shadow-none print:bg-transparent print:p-0 w-full sm:w-auto">
           <input type="checkbox" className="w-4 h-4 text-blue-600 rounded" checked={meta.evaluadoPrevioPrimeraDosis} onChange={(e) => updateMeta('evaluadoPrevioPrimeraDosis', e.target.checked)} />
           <span className="font-semibold text-sm text-slate-800">Idoneidad evaluada antes de 1ra dosis</span>
         </label>
@@ -2046,8 +2573,8 @@ function PharmacotherapyTab({ patient, updatePatient }) {
       {/* SECCIÓN DE SOLUCIONES INTRAVENOSAS */}
       <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mb-6 print:border-slate-300 print:shadow-none mt-8">
         <div className={`px-4 py-2 font-bold border-b bg-cyan-100 text-cyan-900 border-cyan-200 print:bg-slate-100 print:text-black print:border-slate-300`}>Soluciones Intravenosas (Fluidos)</div>
-        <div className="overflow-x-auto print:overflow-visible">
-          <table className="min-w-full text-sm border-collapse">
+        <div className="overflow-x-auto overscroll-x-contain print:overflow-visible">
+          <table className="min-w-[1120px] text-xs sm:text-sm border-collapse">
             <thead className="bg-slate-50 border-b print:bg-white">
               <tr>
                 <th className="p-2 text-left font-semibold">Solución Base</th>
@@ -2109,8 +2636,8 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, removeItem,
   return (
     <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mb-6 print:border-slate-300 print:shadow-none">
       <div className={`px-4 py-2 font-bold border-b ${headerColors[theme]} print:bg-slate-100 print:text-black print:border-slate-300`}>{title}</div>
-      <div className="overflow-x-auto print:overflow-visible">
-        <table className="min-w-full text-sm border-collapse">
+      <div className="overflow-x-auto overscroll-x-contain print:overflow-visible">
+        <table className="min-w-[1400px] text-xs sm:text-sm border-collapse">
           <thead className="bg-slate-50 border-b print:bg-white">
             <tr>
               <th className="p-2 text-left font-semibold w-24">Categoría</th>
@@ -2189,9 +2716,9 @@ function PrmTab({ patient, updatePatient }) {
     <div className="space-y-12">
       {/* SECCIÓN 1: PRM */}
       <section className="space-y-4">
-        <div className="flex justify-between items-center border-b pb-2">
+        <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center border-b pb-2">
           <div><h2 className="text-2xl font-bold text-orange-700 flex items-center print:text-black"><FileWarning className="w-6 h-6 mr-2"/> Problemas Relacionados con Medicamentos (PRM)</h2></div>
-          <button onClick={addPrm} className="bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-sm flex items-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Registrar PRM</button>
+          <button onClick={addPrm} className="w-full sm:w-auto bg-orange-600 hover:bg-orange-700 text-white px-3 py-1.5 rounded text-sm flex items-center justify-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Registrar PRM</button>
         </div>
         <div className="grid gap-6">
           {prms.length === 0 && <div className="text-center p-8 bg-slate-50 border border-dashed border-slate-300 rounded-lg text-slate-500 print:bg-transparent">No hay PRMs registrados.</div>}
@@ -2236,9 +2763,9 @@ function PrmTab({ patient, updatePatient }) {
 
       {/* SECCIÓN 2: INTERACCIONES */}
       <section className="space-y-4">
-        <div className="flex justify-between items-center border-b pb-2">
+        <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center border-b pb-2">
           <div><h2 className="text-2xl font-bold text-amber-600 flex items-center print:text-black">Interacciones Medicamentosas</h2></div>
-          <button onClick={addInteraccion} className="bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded text-sm flex items-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Registrar Interacción</button>
+          <button onClick={addInteraccion} className="w-full sm:w-auto bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded text-sm flex items-center justify-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Registrar Interacción</button>
         </div>
         <div className="grid gap-6">
           {interacciones.length === 0 && <div className="text-center p-8 bg-slate-50 border border-dashed border-slate-300 rounded-lg text-slate-500 print:bg-transparent">No hay interacciones registradas.</div>}
@@ -2319,10 +2846,10 @@ function LabsTab({ patient, updatePatient }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-end border-b pb-2">
+      <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-end border-b pb-2">
         <h2 className="text-2xl font-bold text-slate-800">Resultados Históricos de Laboratorio</h2>
         {crcl && (
-           <div className="flex flex-col items-end">
+           <div className="flex flex-col items-start sm:items-end">
                <div className={`px-4 py-2 rounded-lg flex items-center shadow-sm border print:shadow-none ${getTfgColorClass(crcl)}`}>
                   <Activity className="w-5 h-5 mr-2" />
                   <div className="flex flex-col"><span className="text-xs font-bold uppercase">TFG Est. (Cockcroft-Gault)</span><span className="text-lg font-black">{crcl} <span className="text-sm font-normal">mL/min</span></span></div>
@@ -2341,12 +2868,12 @@ function LabsTab({ patient, updatePatient }) {
                 
                 return (
                   <div key={param.name} className="flex flex-col border-b border-dashed border-slate-200 pb-3">
-                     <div className="flex justify-between items-center mb-2">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:justify-between sm:items-center mb-2">
                         <div>
                           <span className="block text-sm font-bold text-slate-700">{param.name}</span>
                           <span className="block text-xs text-slate-400">Rango: {param.min !== null ? `${param.min}-${param.max}` : 'N/A'} {param.unit}</span>
                         </div>
-                        <div className="flex items-center space-x-3">
+                      <div className="flex items-center gap-2 self-start sm:self-auto">
                            <Sparkline data={labData} />
                            <button onClick={() => addLabEntry(param.name)} className="text-[10px] uppercase font-bold bg-blue-50 hover:bg-blue-100 text-blue-600 px-2 py-1.5 rounded flex items-center transition-colors print:hidden"><Plus className="w-3 h-3 mr-1"/> Añadir Dato</button>
                         </div>
@@ -2357,11 +2884,11 @@ function LabsTab({ patient, updatePatient }) {
                           {labData.map((entry) => {
                              const isOutOfRange = entry.value && param.min !== null && (Number(entry.value) < param.min || Number(entry.value) > param.max);
                              return (
-                               <div key={entry.id} className="flex items-center space-x-2 bg-slate-50 p-1.5 rounded-md border border-slate-100 print:bg-transparent print:border-none print:p-0">
-                                  <input type="date" value={entry.date} onChange={(e) => updateLabEntry(param.name, entry.id, 'date', e.target.value)} className="text-xs p-1 border border-slate-200 rounded w-28 print:border-none print:p-0" />
-                                  <input type="number" step="0.01" value={entry.value} onChange={(e) => updateLabEntry(param.name, entry.id, 'value', e.target.value)} className={`text-xs p-1 border rounded flex-1 ${isOutOfRange ? 'border-red-400 bg-red-100 text-red-800 font-bold' : 'border-slate-200'} print:border-none print:p-0`} placeholder="Resultado..." />
-                                  <span className="text-xs text-slate-500 w-10 text-right">{param.unit}</span>
-                                  <button onClick={() => removeLabEntry(param.name, entry.id)} className="text-red-400 hover:text-red-600 ml-2 print:hidden" title="Borrar este registro"><X className="w-4 h-4"/></button>
+                               <div key={entry.id} className="flex flex-wrap items-center gap-2 bg-slate-50 p-1.5 rounded-md border border-slate-100 print:bg-transparent print:border-none print:p-0">
+                                 <input type="date" value={entry.date} onChange={(e) => updateLabEntry(param.name, entry.id, 'date', e.target.value)} className="text-xs p-1 border border-slate-200 rounded w-full sm:w-28 print:border-none print:p-0" />
+                                 <input type="number" step="0.01" value={entry.value} onChange={(e) => updateLabEntry(param.name, entry.id, 'value', e.target.value)} className={`text-xs p-1 border rounded w-full sm:flex-1 ${isOutOfRange ? 'border-red-400 bg-red-100 text-red-800 font-bold' : 'border-slate-200'} print:border-none print:p-0`} placeholder="Resultado..." />
+                                 <span className="text-xs text-slate-500 w-full sm:w-10 sm:text-right">{param.unit}</span>
+                                 <button onClick={() => removeLabEntry(param.name, entry.id)} className="text-red-400 hover:text-red-600 sm:ml-2 print:hidden" title="Borrar este registro"><X className="w-4 h-4"/></button>
                                </div>
                              );
                           })}
@@ -2389,9 +2916,9 @@ function MicrobiologyTab({ patient, updatePatient }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-between items-center border-b pb-2">
+      <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center border-b pb-2">
         <div><h2 className="text-2xl font-bold text-purple-800 flex items-center print:text-black"><Microscope className="w-6 h-6 mr-2"/> Microbiología y Antibiograma</h2></div>
-        <button onClick={addItem} className="bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded text-sm flex items-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Nueva Muestra</button>
+        <button onClick={addItem} className="w-full sm:w-auto bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded text-sm flex items-center justify-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Nueva Muestra</button>
       </div>
       <div className="grid gap-6">
         {items.length === 0 && <div className="text-center p-8 bg-slate-50 border border-dashed border-slate-300 rounded-lg text-slate-500 print:bg-transparent">No hay cultivos ni aislamientos registrados.</div>}
@@ -2427,9 +2954,9 @@ function RamTab({ patient, updatePatient }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-between items-center border-b pb-2">
+      <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center border-b pb-2">
         <div><h2 className="text-2xl font-bold text-red-700 flex items-center print:text-black"><ShieldAlert className="w-6 h-6 mr-2"/> Reacciones Adversas (RAM)</h2></div>
-        <button onClick={addItem} className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded text-sm flex items-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Registrar RAM</button>
+        <button onClick={addItem} className="w-full sm:w-auto bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded text-sm flex items-center justify-center font-medium print:hidden"><Plus className="w-4 h-4 mr-1" /> Registrar RAM</button>
       </div>
       <div className="grid gap-6">
         {items.length === 0 && <div className="text-center p-8 bg-slate-50 border border-dashed border-slate-300 rounded-lg text-slate-500 print:bg-transparent">Sin sospechas de RAM documentadas.</div>}
@@ -2467,8 +2994,8 @@ function TabButton({ icon, label, isActive, onClick }) {
 function FormInput({ label, name, type = "text", value = "", onChange, placeholder }) {
   return (
     <div className="flex flex-col">
-      <label className="text-sm font-semibold text-slate-600 mb-1 truncate" title={label}>{label}</label>
-      <input type={type} name={name} value={value || ''} onChange={onChange} placeholder={placeholder} className="border-slate-300 rounded-md shadow-sm sm:text-sm px-3 py-2 print:border-none print:bg-transparent print:p-0 print:font-medium print:text-slate-800" />
+      <label className="fc-label truncate" title={label}>{label}</label>
+      <input type={type} name={name} value={value || ''} onChange={onChange} placeholder={placeholder} className="fc-input print:border-none print:bg-transparent print:p-0 print:font-medium print:text-slate-800" />
     </div>
   );
 }
@@ -2476,8 +3003,8 @@ function FormInput({ label, name, type = "text", value = "", onChange, placehold
 function FormSelect({ label, name, value = "", onChange, options }) {
   return (
     <div className="flex flex-col w-full">
-      <label className="text-sm font-semibold text-slate-600 mb-1 truncate" title={label}>{label}</label>
-      <select name={name} value={value || ''} onChange={onChange} className="border-slate-300 rounded-md shadow-sm sm:text-sm px-3 py-2 print:appearance-none print:border-none print:bg-transparent print:p-0 print:font-medium print:text-slate-800">
+      <label className="fc-label truncate" title={label}>{label}</label>
+      <select name={name} value={value || ''} onChange={onChange} className="fc-input print:appearance-none print:border-none print:bg-transparent print:p-0 print:font-medium print:text-slate-800">
         <option value="">Sel...</option>{options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
       </select>
     </div>
@@ -2487,8 +3014,8 @@ function FormSelect({ label, name, value = "", onChange, options }) {
 function ReadOnlyField({ label, value }) {
   return (
     <div className="flex flex-col justify-end">
-      <span className="text-sm font-semibold text-slate-600 mb-1 truncate" title={label}>{label}</span>
-      <div className="bg-slate-100 p-2 rounded-md border border-slate-200 h-[38px] flex items-center justify-center font-mono text-sm print:border-none print:bg-transparent print:p-0 print:justify-start print:font-medium print:text-slate-800">{value || '-'}</div>
+      <span className="fc-label truncate" title={label}>{label}</span>
+      <div className="bg-slate-100 p-2 rounded-lg border border-slate-200 h-[40px] flex items-center justify-center font-mono text-sm print:border-none print:bg-transparent print:p-0 print:justify-start print:font-medium print:text-slate-800">{value || '-'}</div>
     </div>
   );
 }
