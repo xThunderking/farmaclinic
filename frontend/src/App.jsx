@@ -1,10 +1,13 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { 
-  Users, UserPlus, Activity, Pill, ClipboardList, 
-  ArrowLeft, Plus, Trash2, AlertTriangle, ShieldAlert, 
-  CheckCircle, Printer, FileSpreadsheet, Search, Filter,
-  Microscope, Lock, LogOut, Settings, ShieldCheck, UserCog, Bug, FileWarning, RefreshCcw, Layers, X, PieChart, ListChecks, TestTube, History, CheckSquare, XCircle, Unlock
+  Users, UserPlus, Activity, ClipboardList, 
+  Plus, Trash2, AlertTriangle, ShieldAlert, 
+  CheckCircle, FileSpreadsheet, Search, Filter,
+  Microscope, Lock, Settings, ShieldCheck, Bug, FileWarning, RefreshCcw, Layers, X, PieChart, ListChecks, TestTube, History, CheckSquare, XCircle, Unlock, CircleHelp
 } from 'lucide-react';
+import AppFooter from './components/layout/AppFooter';
+import TopBar from './components/layout/TopBar';
+import PatientSidebar from './components/patient/PatientSidebar';
 
 // --- Constantes y Listas ---
 const PRESENTACIONES = ["Amp", "Fam", "Fco", "Cap", "Tab", "Sup", "Susp", "SL", "Jer Prell", "Pch", "Ovu"];
@@ -12,6 +15,15 @@ const VIAS = ["IV", "IM", "VO", "SC", "Rectal", "Inh", "Tópica", "Oftálmica", 
 const CATEGORIAS_FARMACO = ["General", "Antibiótico", "Alto Riesgo"];
 const IDONEIDAD_OPCIONES = ["Pendiente", "Idóneo", "No Idóneo"];
 const CATEGORIAS_PRM = ["Dispensación", "Prescripción", "Transcripción", "Preparación", "Administración"];
+const MAR_RECOMENDACIONES = [
+  'Insulinas',
+  'Anticoagulantes',
+  'Electrolitos concentrados',
+  'Citotóxicos',
+  'Sedantes y narcóticos',
+  'Neurobloqueadores',
+  'Inotrópicos y aminas',
+];
 
 const TIPOS_PACIENTE = ["Quirúrgico", "No quirúrgico"];
 const ESPECIALIDADES = [
@@ -98,6 +110,9 @@ const PREGUNTAS_ENTREVISTA = [
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
 const SESSION_USER_KEY = 'farmaclinic_current_user';
 const CLIENT_ID_KEY = 'farmaclinic_client_id';
+const APP_VERSION = 'FARMA 1.1';
+const PRESENCE_HEARTBEAT_MS = 45000;
+const PRESENCE_TTL_MS = 180000;
 
 const safeStorageGet = (key) => {
   if (typeof window === 'undefined') return null;
@@ -142,6 +157,83 @@ const getOrCreateClientId = () => {
   const newId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   safeStorageSet(CLIENT_ID_KEY, newId);
   return newId;
+};
+
+const normalizePresenceIds = (ids = []) => Array.from(new Set((ids || []).filter(Boolean)));
+
+const arePresenceMapsEqual = (a = {}, b = {}) => {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((key) => a[key] === b[key]);
+};
+
+const touchPresenceInPatient = (patient, userId, timestamp = Date.now()) => {
+  const activeUsers = normalizePresenceIds([...(patient.activeUsers || []), userId]);
+  const activeUsersLastSeen = { ...(patient.activeUsersLastSeen || {}), [userId]: timestamp };
+  return { ...patient, activeUsers, activeUsersLastSeen };
+};
+
+const removePresenceFromPatient = (patient, userId) => {
+  const activeUsers = (patient.activeUsers || []).filter((uid) => uid && uid !== userId);
+  const activeUsersLastSeen = { ...(patient.activeUsersLastSeen || {}) };
+  delete activeUsersLastSeen[userId];
+
+  const sameUsers = (patient.activeUsers || []).length === activeUsers.length
+    && (patient.activeUsers || []).every((uid, idx) => uid === activeUsers[idx]);
+
+  if (sameUsers && arePresenceMapsEqual(patient.activeUsersLastSeen || {}, activeUsersLastSeen)) {
+    return patient;
+  }
+
+  return { ...patient, activeUsers, activeUsersLastSeen };
+};
+
+const sanitizePatientPresence = (patient, validUserIds = new Set(), options = {}) => {
+  const now = options.now || Date.now();
+  const dropStale = options.dropStale !== false;
+  const keepMissingTimestamps = options.keepMissingTimestamps !== false;
+
+  const inputIds = normalizePresenceIds(patient.activeUsers || []);
+  const rawSeen = patient.activeUsersLastSeen || {};
+
+  const activeUsers = [];
+  const activeUsersLastSeen = {};
+
+  inputIds.forEach((uid) => {
+    if (validUserIds.size > 0 && !validUserIds.has(uid)) return;
+
+    const rawTs = Number(rawSeen[uid]);
+    const hasValidTimestamp = Number.isFinite(rawTs) && rawTs > 0;
+    const ts = hasValidTimestamp ? rawTs : (keepMissingTimestamps ? now : 0);
+    if (!ts) return;
+
+    if (dropStale && now - ts > PRESENCE_TTL_MS) return;
+
+    activeUsers.push(uid);
+    activeUsersLastSeen[uid] = ts;
+  });
+
+  const sameUsers = inputIds.length === activeUsers.length
+    && inputIds.every((uid, idx) => uid === activeUsers[idx]);
+  const sameMap = arePresenceMapsEqual(rawSeen, activeUsersLastSeen);
+
+  if (sameUsers && sameMap) return patient;
+  return { ...patient, activeUsers, activeUsersLastSeen };
+};
+
+const listOtherActiveUsers = (patient, currentUserId) => {
+  const now = Date.now();
+  const ids = normalizePresenceIds(patient?.activeUsers || []);
+  const lastSeen = patient?.activeUsersLastSeen || {};
+
+  return ids.filter((uid) => {
+    if (!uid || uid === currentUserId) return false;
+
+    const ts = Number(lastSeen[uid]);
+    if (!Number.isFinite(ts) || ts <= 0) return true;
+    return now - ts <= PRESENCE_TTL_MS;
+  });
 };
 
 const hasMeaningfulValue = (value) => {
@@ -261,6 +353,35 @@ const formatExcelDate = (isoStr) => {
   return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${yy} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
+const generateInternalIdentifier = (patients, ingresoDate) => {
+  const rawDate = ingresoDate ? new Date(ingresoDate) : new Date();
+  const d = isNaN(rawDate.getTime()) ? new Date() : rawDate;
+
+  const yy = d.getFullYear().toString().slice(-2);
+  const mm = (d.getMonth() + 1).toString().padStart(2, '0');
+  const prefix = `FV-${mm}${yy}-`;
+
+  const matchingPatients = (patients || []).filter((p) => {
+    const internalId = p?.demographics?.identificadorInterno;
+    return typeof internalId === 'string' && internalId.startsWith(prefix);
+  });
+
+  let maxConsecutive = 0;
+  matchingPatients.forEach((p) => {
+    const internalId = p.demographics.identificadorInterno;
+    const parts = internalId.split('-');
+    if (parts.length === 3) {
+      const num = parseInt(parts[2], 10);
+      if (!isNaN(num) && num > maxConsecutive) {
+        maxConsecutive = num;
+      }
+    }
+  });
+
+  const nextNum = (maxConsecutive + 1).toString().padStart(3, '0');
+  return `${prefix}${nextNum}`;
+};
+
 const exportToCSV = (filename, rows) => {
   const csvContent = "data:text/csv;charset=utf-8,\uFEFF" 
     + rows.map(e => e.map(cell => `"${(cell || '').toString().replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -294,6 +415,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('demographics');
   const [viewingAdmin, setViewingAdmin] = useState(false);
   const [showNewPatientModal, setShowNewPatientModal] = useState(false);
+  const [isPatientSidebarOpen, setIsPatientSidebarOpen] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
   const [syncError, setSyncError] = useState('');
   const loadedFromDbRef = useRef(false);
@@ -308,8 +430,15 @@ export default function App() {
       try {
         const data = await apiFetch('/api/bootstrap');
         if (!mounted) return;
-        setUsers(Array.isArray(data?.users) ? data.users : initialUsers);
-        setPatients(Array.isArray(data?.patients) ? data.patients : []);
+        const incomingUsers = Array.isArray(data?.users) ? data.users : initialUsers;
+        const incomingPatients = Array.isArray(data?.patients) ? data.patients : [];
+        const validUserIds = new Set(incomingUsers.map((u) => u.id));
+        const normalizedPatients = incomingPatients.map((p) =>
+          sanitizePatientPresence(p, validUserIds, { dropStale: true, keepMissingTimestamps: true })
+        );
+
+        setUsers(incomingUsers);
+        setPatients(normalizedPatients);
         setSyncError('');
         loadedFromDbRef.current = true;
       } catch (_err) {
@@ -338,6 +467,12 @@ export default function App() {
     if (bootstrapping || !currentUser) return;
     const refreshedUser = users.find((u) => u.id === currentUser.id);
     if (!refreshedUser) {
+      if (activePatientId && currentUser.id) {
+        setPatients((prev) => prev.map((patient) => {
+          if (patient.id !== activePatientId) return patient;
+          return removePresenceFromPatient(patient, currentUser.id);
+        }));
+      }
       setCurrentUser(null);
       setViewingAdmin(false);
       setActivePatientId(null);
@@ -346,7 +481,7 @@ export default function App() {
     if (JSON.stringify(refreshedUser) !== JSON.stringify(currentUser)) {
       setCurrentUser(refreshedUser);
     }
-  }, [bootstrapping, users, currentUser]);
+  }, [bootstrapping, users, currentUser, activePatientId]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof EventSource === 'undefined') return;
@@ -358,10 +493,17 @@ export default function App() {
     const refreshFromServer = async () => {
       try {
         const data = await apiFetch('/api/bootstrap');
+        const incomingUsers = Array.isArray(data?.users) ? data.users : initialUsers;
+        const incomingPatients = Array.isArray(data?.patients) ? data.patients : [];
+        const validUserIds = new Set(incomingUsers.map((u) => u.id));
+        const normalizedPatients = incomingPatients.map((p) =>
+          sanitizePatientPresence(p, validUserIds, { dropStale: true, keepMissingTimestamps: true })
+        );
+
         skipNextUsersSyncRef.current = true;
         skipNextPatientsSyncRef.current = true;
-        setUsers(Array.isArray(data?.users) ? data.users : initialUsers);
-        setPatients(Array.isArray(data?.patients) ? data.patients : []);
+        setUsers(incomingUsers);
+        setPatients(normalizedPatients);
         setSyncError('');
       } catch (_err) {
         // ignore transient refresh errors; connection will retry
@@ -427,36 +569,160 @@ export default function App() {
     };
   }, [patients]);
 
+  useEffect(() => {
+    if (!currentUser?.id || !activePatientId) return;
+
+    const touchPresence = () => {
+      const now = Date.now();
+      setPatients((prev) => {
+        let changed = false;
+        const next = prev.map((patient) => {
+          let updated = patient;
+
+          if ((patient.activeUsers || []).includes(currentUser.id) && patient.id !== activePatientId) {
+            updated = removePresenceFromPatient(updated, currentUser.id);
+          }
+
+          if (patient.id === activePatientId) {
+            updated = touchPresenceInPatient(updated, currentUser.id, now);
+          }
+
+          if (updated !== patient) changed = true;
+          return updated;
+        });
+
+        return changed ? next : prev;
+      });
+    };
+
+    touchPresence();
+    const timer = setInterval(touchPresence, PRESENCE_HEARTBEAT_MS);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [activePatientId, currentUser?.id]);
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+
+    const cleanupPresence = () => {
+      const now = Date.now();
+      const validUserIds = new Set(users.map((u) => u.id));
+
+      setPatients((prev) => {
+        let changed = false;
+        const next = prev.map((patient) => {
+          const sanitized = sanitizePatientPresence(patient, validUserIds, {
+            now,
+            dropStale: true,
+            keepMissingTimestamps: true,
+          });
+          if (sanitized !== patient) changed = true;
+          return sanitized;
+        });
+
+        return changed ? next : prev;
+      });
+    };
+
+    cleanupPresence();
+    const timer = setInterval(cleanupPresence, PRESENCE_HEARTBEAT_MS);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [users, currentUser?.id]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const releasePresence = () => {
+      if (!activePatientId || !currentUser?.id) return;
+
+      setPatients((prev) => {
+        let changed = false;
+        const next = prev.map((patient) => {
+          if (patient.id !== activePatientId) return patient;
+          const updated = removePresenceFromPatient(patient, currentUser.id);
+          if (updated !== patient) changed = true;
+          return updated;
+        });
+        return changed ? next : prev;
+      });
+    };
+
+    window.addEventListener('pagehide', releasePresence);
+    window.addEventListener('beforeunload', releasePresence);
+
+    return () => {
+      window.removeEventListener('pagehide', releasePresence);
+      window.removeEventListener('beforeunload', releasePresence);
+    };
+  }, [activePatientId, currentUser?.id]);
+
+  useEffect(() => {
+    if (!isPatientSidebarOpen) return;
+
+    const handleEsc = (event) => {
+      if (event.key === 'Escape') {
+        setIsPatientSidebarOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleEsc);
+    return () => {
+      window.removeEventListener('keydown', handleEsc);
+    };
+  }, [isPatientSidebarOpen]);
+
   // --- LÓGICA DE PRESENCIA COLABORATIVA Y NAVEGACIÓN ---
   const handleEnterPatient = (id, targetTab = 'demographics') => {
     const p = patients.find(x => x.id === id);
-    if (!p) return;
-    
-    // En lugar de bloquear, nos sumamos al arreglo de usuarios activos en este perfil
-    setPatients(prev => prev.map(x => {
-      if (x.id === id) {
-        const currentUsers = x.activeUsers || [];
-        if (!currentUsers.includes(currentUser.id)) {
-          return { ...x, activeUsers: [...currentUsers, currentUser.id] };
+    if (!p || !currentUser?.id) return;
+
+    const now = Date.now();
+    setPatients((prev) => {
+      let changed = false;
+      const next = prev.map((patient) => {
+        let updated = patient;
+
+        if ((patient.activeUsers || []).includes(currentUser.id) && patient.id !== id) {
+          updated = removePresenceFromPatient(updated, currentUser.id);
         }
-      }
-      return x;
-    }));
+
+        if (patient.id === id) {
+          updated = touchPresenceInPatient(updated, currentUser.id, now);
+        }
+
+        if (updated !== patient) changed = true;
+        return updated;
+      });
+
+      return changed ? next : prev;
+    });
+
     setActivePatientId(id);
     setActiveTab(targetTab);
+    setIsPatientSidebarOpen(false);
   };
 
   const handleExitPatient = () => {
-    if (activePatientId) {
-      // Nos retiramos del arreglo de usuarios activos al salir
-      setPatients(prev => prev.map(x => {
-        if (x.id === activePatientId) {
-          return { ...x, activeUsers: (x.activeUsers || []).filter(uid => uid !== currentUser.id) };
-        }
-        return x;
-      }));
+    if (activePatientId && currentUser?.id) {
+      setPatients((prev) => {
+        let changed = false;
+        const next = prev.map((patient) => {
+          if (patient.id !== activePatientId) return patient;
+          const updated = removePresenceFromPatient(patient, currentUser.id);
+          if (updated !== patient) changed = true;
+          return updated;
+        });
+        return changed ? next : prev;
+      });
     }
+
     setActivePatientId(null);
+    setIsPatientSidebarOpen(false);
   };
 
   const handleLogoutWithUnlock = () => {
@@ -488,15 +754,18 @@ export default function App() {
 
   const createNewPatientFromModal = (initialData) => {
     const newId = Date.now().toString();
+    const now = Date.now();
     const currentDateLocal = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0,16);
     const ingresoFinal = initialData.fechaIngreso || currentDateLocal;
+    const internalIdFinal = (initialData.identificadorInterno || '').trim() || generateInternalIdentifier(patients, ingresoFinal);
     
     const newPatient = {
       id: newId,
       pacienteBaseId: newId, 
       deleted: false,
       activeUsers: [currentUser.id], // Ingresamos directamente como activos
-      demographics: { identificadorInterno: initialData.identificadorInterno || '', numeroPaciente: initialData.numeroPaciente || '', numeroEpisodio: '', nombre: initialData.nombre || '', fechaNacimiento: initialData.fechaNacimiento || '', peso: '', altura: '', ingreso: ingresoFinal, egreso: '', tipoPaciente: '', especialidad: '', toxicomania: '', alcoholismo: '', comorbilidades: '', comorbilidadesTipo: '', observacionesGenerales: '' },
+      activeUsersLastSeen: { [currentUser.id]: now },
+      demographics: { identificadorInterno: internalIdFinal, numeroPaciente: initialData.numeroPaciente || '', numeroEpisodio: '', nombre: initialData.nombre || '', fechaNacimiento: initialData.fechaNacimiento || '', peso: '', altura: '', ingreso: ingresoFinal, egreso: '', tipoPaciente: '', especialidad: '', toxicomania: '', alcoholismo: '', comorbilidades: '', comorbilidadesTipo: '', observacionesGenerales: '' },
       labs: {}, interview: {}, conciliacion: { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false }, 
       perfilFarmacoMeta: { evaluadoPrevioPrimeraDosis: false },
       perfilFarmaco: [], solucionesIV: [], prms: [], interacciones: [], ram: [], microbiologia: []
@@ -507,20 +776,25 @@ export default function App() {
     setShowNewPatientModal(false);
   };
 
-  const handleCreateReingresoFromModal = (basePatientMatch) => {
+  const handleCreateReingresoFromModal = (basePatientMatch, initialData = {}) => {
     const baseId = basePatientMatch.pacienteBaseId || basePatientMatch.id;
     const newId = Date.now().toString();
+    const now = Date.now();
     const currentDateLocal = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0,16);
+    const ingresoFinal = initialData.fechaIngreso || currentDateLocal;
+    const internalIdFinal = (initialData.identificadorInterno || '').trim() || generateInternalIdentifier(patients, ingresoFinal);
 
     const newReingreso = {
         id: newId,
         pacienteBaseId: baseId,
         deleted: false,
         activeUsers: [currentUser.id],
+        activeUsersLastSeen: { [currentUser.id]: now },
         demographics: {
             ...basePatientMatch.demographics,
+            identificadorInterno: internalIdFinal,
             numeroEpisodio: '', 
-            ingreso: currentDateLocal,
+            ingreso: ingresoFinal,
             egreso: '',
             motivoIngreso: '',
             diagnosticoPrincipal: '',
@@ -565,7 +839,7 @@ export default function App() {
 
   if (!activePatientId) {
     return (
-      <div className="min-h-screen bg-slate-100 flex flex-col relative">
+      <div className="min-h-screen bg-slate-100 flex flex-col relative overflow-x-hidden">
         <TopBar currentUser={currentUser} onLogout={handleLogoutWithUnlock} onAdmin={() => setViewingAdmin(true)} />
         {syncError && <div className="mx-8 mt-4 bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded text-sm">{syncError}</div>}
         <Dashboard 
@@ -578,6 +852,7 @@ export default function App() {
            currentUser={currentUser} 
            users={users} 
         />
+        <AppFooter version={APP_VERSION} />
         
         {/* MODAL NUEVO PACIENTE */}
         {showNewPatientModal && (
@@ -598,6 +873,14 @@ export default function App() {
   // Buscar historial de episodios para el sidebar
   const baseId = activePatient.pacienteBaseId || activePatient.id;
   const episodiosDelPaciente = patients.filter(p => !p.deleted && (p.pacienteBaseId || p.id) === baseId).sort((a,b) => new Date(a.demographics.ingreso) - new Date(b.demographics.ingreso));
+  const handleChangeActiveTab = (nextTab) => {
+    setActiveTab(nextTab);
+    setIsPatientSidebarOpen(false);
+  };
+  const handleSelectEpisode = (episodeId) => {
+    handleEnterPatient(episodeId, activeTab);
+    setIsPatientSidebarOpen(false);
+  };
 
   const handleExportPatientCSV = () => {
     const p = activePatient;
@@ -652,87 +935,75 @@ export default function App() {
   const diasEstancia = calculateDaysOfUse(activePatient.demographics.ingreso, activePatient.demographics.egreso);
 
   // Lógica para detectar presencia de otros usuarios en ESTE perfil específico
-  const otherActiveUserIds = (activePatient.activeUsers || []).filter(uid => uid !== currentUser.id);
+  const otherActiveUserIds = listOtherActiveUsers(activePatient, currentUser.id);
   const otherActiveNames = otherActiveUserIds.map(uid => users.find(u => u.id === uid)?.nombre).join(', ');
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col font-sans text-slate-800 print:bg-white relative">
-      <TopBar currentUser={currentUser} onLogout={handleLogoutWithUnlock} onAdmin={() => setViewingAdmin(true)} isPatientView={true} onBack={handleExitPatient} />
+    <div className="h-screen overflow-hidden bg-slate-50 flex flex-col font-sans text-slate-800 print:bg-white print:h-auto print:overflow-visible relative">
+      <TopBar
+        currentUser={currentUser}
+        onLogout={handleLogoutWithUnlock}
+        onAdmin={() => setViewingAdmin(true)}
+        isPatientView={true}
+        onBack={handleExitPatient}
+        showSidebarToggle={true}
+        onToggleSidebar={() => setIsPatientSidebarOpen((prev) => !prev)}
+      />
       {syncError && <div className="mx-6 mt-3 bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded text-sm print:hidden">{syncError}</div>}
       
-      <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-        {/* Sidebar Interactivo */}
-        <div className="w-full md:w-64 bg-white border-r border-slate-200 flex flex-col shadow-sm print:hidden z-10 overflow-y-auto">
-          <div className="p-4 border-b border-slate-200">
-            <h2 className="font-bold text-lg truncate text-blue-800" title={activePatient.demographics.nombre || 'Sin Nombre'}>{activePatient.demographics.nombre || 'Nuevo Paciente'}</h2>
-            <div className="text-xs text-slate-500 mt-1 space-y-1">
-              <p>Exp: <strong>{activePatient.demographics.numeroPaciente || '-'}</strong> | FV: <strong>{activePatient.demographics.identificadorInterno || '-'}</strong></p>
-              <p>Hab: {activePatient.demographics.habitacion || '-'} | Edad: {edad ? `${edad} a. (${grupoEtario})` : '-'}</p>
-              <p className="font-medium text-slate-700 bg-slate-100 inline-block px-2 py-0.5 rounded">Estancia: {diasEstancia} días</p>
-            </div>
-            {activePatient.demographics.egreso && <span className="mt-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">Egresado ({formatExcelDate(activePatient.demographics.egreso)})</span>}
-          </div>
+      <div className="relative flex-1 min-h-0 flex overflow-hidden">
+        <div
+          className={`absolute inset-0 z-30 bg-slate-900/45 transition-opacity duration-200 xl:hidden print:hidden ${isPatientSidebarOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
+          onClick={() => setIsPatientSidebarOpen(false)}
+          aria-hidden="true"
+        />
 
-          {/* Historial de Episodios */}
-          {episodiosDelPaciente.length > 0 && activePatient.demographics.nombre && (
-            <div className="p-4 border-b border-slate-200 bg-slate-50">
-               <div className="flex justify-between items-center mb-2">
-                 <h3 className="text-xs font-bold text-slate-500 uppercase flex items-center"><Layers className="w-3 h-3 mr-1"/> Historial / Episodios</h3>
-                 <button onClick={handleCreateReingreso} className="text-[10px] bg-blue-600 text-white px-2 py-1 rounded font-bold hover:bg-blue-700 transition" title="Crear un nuevo episodio de hospitalización para este paciente">+ Reingreso</button>
-               </div>
-               <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-                  {episodiosDelPaciente.map((ep, i) => {
-                      const epOtherActive = (ep.activeUsers || []).filter(uid => uid !== currentUser.id);
-                      const hasOthersInEp = epOtherActive.length > 0;
+        <aside className={`absolute inset-y-0 left-0 z-40 w-[min(22rem,88vw)] transform transition-transform duration-200 ease-out xl:hidden print:hidden ${isPatientSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+          <PatientSidebar
+            activePatient={activePatient}
+            activeTab={activeTab}
+            onTabChange={handleChangeActiveTab}
+            edad={edad}
+            grupoEtario={grupoEtario}
+            diasEstancia={diasEstancia}
+            episodiosDelPaciente={episodiosDelPaciente}
+            currentUser={currentUser}
+            onCreateReingreso={handleCreateReingreso}
+            onSelectEpisode={handleSelectEpisode}
+            onDeleteEpisode={permanentlyDelete}
+            onExportCsv={handleExportPatientCSV}
+            onPrint={handlePrint}
+            formatDate={formatExcelDate}
+            presenceTtlMs={PRESENCE_TTL_MS}
+            className="h-full border-r border-slate-200 shadow-2xl"
+            showCloseButton={true}
+            onRequestClose={() => setIsPatientSidebarOpen(false)}
+          />
+        </aside>
 
-                      return (
-                      <div key={ep.id} className={`w-full flex items-center px-2 py-1.5 text-xs rounded border transition-colors ${ep.id === activePatient.id ? 'bg-blue-100 border-blue-300 shadow-inner' : 'bg-white border-slate-200 hover:bg-slate-100 shadow-sm'}`}>
-                         <button 
-                            onClick={() => {
-                               handleExitPatient();
-                               handleEnterPatient(ep.id, activeTab);
-                            }} 
-                            className={`flex-1 text-left ${ep.id === activePatient.id ? 'text-blue-800 font-bold' : 'text-slate-600'}`}
-                         >
-                           <div className="flex justify-between items-center">
-                             <span className="truncate max-w-[100px] flex items-center">
-                                {hasOthersInEp && <Users className="w-3 h-3 text-blue-500 mr-1" title="Otros usuarios editando" />}
-                                Ep. {i+1} {ep.demographics.numeroEpisodio ? `(${ep.demographics.numeroEpisodio})` : ''}
-                             </span>
-                             <span className={`text-[9px] px-1 py-0.5 rounded ${ep.demographics.egreso ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{ep.demographics.egreso ? 'Alta' : 'Activo'}</span>
-                           </div>
-                           <div className="text-[10px] text-slate-500 mt-1">{formatExcelDate(ep.demographics.ingreso).split(' ')[0]}</div>
-                         </button>
-                         {/* Botón para eliminar perfil de reingreso */}
-                         {episodiosDelPaciente.length > 1 && (
-                            <button onClick={(e) => { e.stopPropagation(); if(window.confirm("¿Seguro que deseas eliminar permanentemente este episodio?")) permanentlyDelete(ep.id); }} className={`ml-2 p-1 rounded transition-colors text-slate-400 hover:text-red-600 hover:bg-red-50`} title={'Eliminar este episodio'}>
-                               <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                         )}
-                      </div>
-                  )})}
-               </div>
-            </div>
-          )}
-
-          <nav className="flex-1 p-2 space-y-1">
-            <TabButton icon={<Users />} label="Perfil General" isActive={activeTab === 'demographics'} onClick={() => setActiveTab('demographics')} />
-            <TabButton icon={<ClipboardList />} label="Entrevista y Conciliación" isActive={activeTab === 'conciliation'} onClick={() => setActiveTab('conciliation')} />
-            <TabButton icon={<Pill />} label="Perfil Farmacoterapéutico" isActive={activeTab === 'pharmacotherapy'} onClick={() => setActiveTab('pharmacotherapy')} />
-            <TabButton icon={<FileWarning />} label="Interacciones y PRM" isActive={activeTab === 'prm'} onClick={() => setActiveTab('prm')} />
-            <TabButton icon={<Activity />} label="Laboratorios (y TFG)" isActive={activeTab === 'labs'} onClick={() => setActiveTab('labs')} />
-            <TabButton icon={<Microscope />} label="Microbiología" isActive={activeTab === 'micro'} onClick={() => setActiveTab('micro')} />
-            <TabButton icon={<ShieldAlert />} label="Reacciones Adversas" isActive={activeTab === 'ram'} onClick={() => setActiveTab('ram')} />
-          </nav>
-          
-          <div className="p-4 border-t border-slate-200 space-y-2 bg-slate-50">
-            <button onClick={handleExportPatientCSV} className="w-full flex items-center justify-center px-3 py-2 bg-green-50 text-green-700 border border-green-200 rounded-md text-sm font-medium hover:bg-green-100 transition-colors"><FileSpreadsheet className="w-4 h-4 mr-2" /> Exportar CSV</button>
-            <button onClick={handlePrint} className="w-full flex items-center justify-center px-3 py-2 bg-white text-slate-700 border border-slate-300 rounded-md text-sm font-medium hover:bg-slate-100 transition-colors"><Printer className="w-4 h-4 mr-2" /> Imprimir / PDF General</button>
-          </div>
+        <div className="hidden xl:flex xl:w-72 xl:shrink-0">
+          <PatientSidebar
+            activePatient={activePatient}
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            edad={edad}
+            grupoEtario={grupoEtario}
+            diasEstancia={diasEstancia}
+            episodiosDelPaciente={episodiosDelPaciente}
+            currentUser={currentUser}
+            onCreateReingreso={handleCreateReingreso}
+            onSelectEpisode={handleSelectEpisode}
+            onDeleteEpisode={permanentlyDelete}
+            onExportCsv={handleExportPatientCSV}
+            onPrint={handlePrint}
+            formatDate={formatExcelDate}
+            presenceTtlMs={PRESENCE_TTL_MS}
+            className="h-full"
+          />
         </div>
 
         {/* Área Principal Interactiva */}
-        <div className="flex-1 overflow-auto p-3 sm:p-4 md:p-8 bg-slate-100 print:hidden">
+        <div className="flex-1 min-h-0 overflow-auto p-2 sm:p-4 lg:p-6 xl:p-8 bg-slate-100 print:hidden">
           <div className="max-w-6xl mx-auto bg-white rounded-xl shadow-sm border border-slate-200 p-4 sm:p-6 relative">
             
             {/* INDICADOR DE EDICIÓN COLABORATIVA EN TIEMPO REAL */}
@@ -1099,29 +1370,7 @@ function NewPatientModal({ patients, onClose, onCreateNew, onCreateReingreso }) 
   // Lógica de Autogeneración de Identificador Interno (FV-MMYY-CONSECUTIVO)
   useEffect(() => {
     if (!formData.fechaIngreso) return;
-    const d = new Date(formData.fechaIngreso);
-    if (isNaN(d.getTime())) return;
-    
-    const yy = d.getFullYear().toString().slice(-2);
-    const mm = (d.getMonth() + 1).toString().padStart(2, '0');
-    const prefix = `FV-${mm}${yy}-`;
-    
-    // Encontrar pacientes (incluyendo eliminados) con este prefijo para mantener el consecutivo histórico
-    const matchingPatients = patients.filter(p => p.demographics.identificadorInterno && p.demographics.identificadorInterno.startsWith(prefix));
-    
-    let maxConsecutive = 0;
-    matchingPatients.forEach(p => {
-      const parts = p.demographics.identificadorInterno.split('-');
-      if (parts.length === 3) {
-        const num = parseInt(parts[2], 10);
-        if (!isNaN(num) && num > maxConsecutive) {
-          maxConsecutive = num;
-        }
-      }
-    });
-    
-    const nextNum = (maxConsecutive + 1).toString().padStart(3, '0');
-    const newIdFV = `${prefix}${nextNum}`;
+    const newIdFV = generateInternalIdentifier(patients, formData.fechaIngreso);
     
     if (formData.identificadorInterno !== newIdFV) {
       setFormData(prev => ({ ...prev, identificadorInterno: newIdFV }));
@@ -1214,7 +1463,7 @@ function NewPatientModal({ patients, onClose, onCreateNew, onCreateReingreso }) 
 
                  {/* DOBLE BOTÓN DE DECISIÓN */}
                  <div className="flex flex-col sm:flex-row gap-2 mt-4">
-                    <button onClick={() => onCreateReingreso(duplicateMatch)} className="flex-1 bg-amber-600 hover:bg-amber-700 text-white py-2 px-3 rounded-md font-bold shadow transition flex items-center justify-center text-sm">
+                      <button onClick={() => onCreateReingreso(duplicateMatch, formData)} className="flex-1 bg-amber-600 hover:bg-amber-700 text-white py-2 px-3 rounded-md font-bold shadow transition flex items-center justify-center text-sm">
                        <Layers className="w-4 h-4 mr-2" /> Agregar como Reingreso
                     </button>
                     <button onClick={() => onCreateNew(formData)} className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 py-2 px-3 rounded-md font-bold shadow-sm transition flex items-center justify-center text-sm">
@@ -1271,59 +1520,48 @@ function LoginScreen({ users, onLogin }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-800 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8">
-        <div className="flex justify-center mb-6">
-          <div className="bg-blue-100 p-4 rounded-full text-blue-700"><ShieldCheck className="w-12 h-12" /></div>
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-blue-900 flex items-center justify-center p-4 sm:p-6">
+      <div className="w-full max-w-md rounded-2xl border border-white/15 bg-white/95 shadow-2xl p-5 sm:p-8">
+        <div className="flex justify-center mb-5">
+          <div className="inline-flex items-center gap-2 rounded-full bg-blue-100 px-4 py-2 text-blue-700 text-sm font-semibold">
+            <ShieldCheck className="w-4 h-4" /> Version {APP_VERSION}
+          </div>
         </div>
-        <h1 className="text-2xl font-bold text-center text-slate-800 mb-2">HIS Farmacia Clínica</h1>
-        <p className="text-center text-slate-500 mb-8 text-sm">Sistema de Gestión Farmacoterapéutica</p>
-        
+
+        <h1 className="text-2xl sm:text-3xl font-black text-slate-800 text-center">HIS Farmacia Clinica</h1>
+        <p className="text-center text-slate-500 mt-2 mb-6 text-sm">Accede para continuar al sistema</p>
+
         {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 border border-red-200">{error}</div>}
-        
+
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Usuario</label>
-            <input type="text" value={username} onChange={e => setUsername(e.target.value)} className="w-full border-slate-300 rounded-lg shadow-sm focus:ring-blue-500 px-4 py-2" required />
+            <input
+              type="text"
+              value={username}
+              onChange={e => setUsername(e.target.value)}
+              className="w-full border border-slate-300 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 px-4 py-2.5"
+              placeholder="Ingresa tu usuario"
+              required
+            />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Contraseña</label>
-            <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full border-slate-300 rounded-lg shadow-sm focus:ring-blue-500 px-4 py-2" required />
+            <label className="block text-sm font-medium text-slate-700 mb-1">Contrasena</label>
+            <input
+              type="password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              className="w-full border border-slate-300 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 px-4 py-2.5"
+              placeholder="Ingresa tu contrasena"
+              required
+            />
           </div>
-          <button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center transition-colors disabled:opacity-70">
-            <Lock className="w-5 h-5 mr-2" /> {loading ? 'Validando...' : 'Iniciar Sesión'}
+          <button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center transition-colors disabled:opacity-70 shadow-sm">
+            <Lock className="w-5 h-5 mr-2" /> {loading ? 'Validando...' : 'Iniciar Sesion'}
           </button>
         </form>
-      </div>
-    </div>
-  );
-}
 
-function TopBar({ currentUser, onLogout, onAdmin, isPatientView, onBack }) {
-  return (
-    <div className="bg-slate-900 text-white px-6 py-3 flex justify-between items-center shadow-md print:hidden z-20">
-      <div className="flex items-center space-x-4">
-        {isPatientView && (
-          <button onClick={onBack} className="text-slate-300 hover:text-white flex items-center text-sm font-medium transition-colors mr-2">
-            <ArrowLeft className="w-5 h-5 mr-1" /> Dashboard
-          </button>
-        )}
-        <div className="flex items-center">
-          <ShieldCheck className="w-6 h-6 text-blue-400 mr-2" />
-          <span className="font-bold text-lg tracking-wide hidden md:block">Farmacia Clínica</span>
-        </div>
-      </div>
-      <div className="flex items-center space-x-6 text-sm">
-        <div className="text-right hidden md:block">
-          <p className="font-semibold text-slate-100">{currentUser.nombre}</p>
-          <p className="text-xs text-slate-400">{currentUser.puesto} | {currentUser.role.toUpperCase()}</p>
-        </div>
-        <div className="flex items-center space-x-2 border-l border-slate-700 pl-4">
-          {currentUser.role === 'admin' && !isPatientView && (
-            <button onClick={onAdmin} className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-full transition" title="Administrar Usuarios"><UserCog className="w-5 h-5" /></button>
-          )}
-          <button onClick={onLogout} className="p-2 text-slate-300 hover:text-red-400 hover:bg-slate-800 rounded-full transition" title="Cerrar Sesión"><LogOut className="w-5 h-5" /></button>
-        </div>
+        <p className="text-center mt-5 text-xs text-slate-500">Sistema de gestion farmacoterapeutica | {APP_VERSION}</p>
       </div>
     </div>
   );
@@ -1604,21 +1842,21 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
   };
 
   return (
-    <div className="flex-1 p-4 sm:p-6 md:p-8 relative">
+    <div className="flex-1 p-3 sm:p-4 lg:p-6 xl:p-8 relative">
       <div className="max-w-7xl mx-auto">
         
         {/* TABS DE DASHBOARD */}
-        <div className="flex flex-wrap gap-2 border-b border-slate-300 mb-6">
-           <button onClick={() => setDashboardTab('pacientes')} className={`pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'pacientes' ? 'border-b-4 border-blue-600 font-bold text-blue-800' : 'text-slate-500 hover:text-slate-700'}`}>
+        <div className="flex gap-2 overflow-x-auto border-b border-slate-300 mb-6 pb-1">
+           <button onClick={() => setDashboardTab('pacientes')} className={`shrink-0 pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'pacientes' ? 'border-b-4 border-blue-600 font-bold text-blue-800' : 'text-slate-500 hover:text-slate-700'}`}>
              <Users className="w-5 h-5 mr-2"/> Censo de Pacientes
            </button>
-           <button onClick={() => setDashboardTab('prms')} className={`pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'prms' ? 'border-b-4 border-orange-500 font-bold text-orange-700' : 'text-slate-500 hover:text-slate-700'}`}>
+           <button onClick={() => setDashboardTab('prms')} className={`shrink-0 pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'prms' ? 'border-b-4 border-orange-500 font-bold text-orange-700' : 'text-slate-500 hover:text-slate-700'}`}>
              <PieChart className="w-5 h-5 mr-2"/> Monitor de PRM
            </button>
-           <button onClick={() => setDashboardTab('proa')} className={`pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'proa' ? 'border-b-4 border-purple-500 font-bold text-purple-700' : 'text-slate-500 hover:text-slate-700'}`}>
+           <button onClick={() => setDashboardTab('proa')} className={`shrink-0 pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'proa' ? 'border-b-4 border-purple-500 font-bold text-purple-700' : 'text-slate-500 hover:text-slate-700'}`}>
              <Bug className="w-5 h-5 mr-2"/> PROA (Microbiología)
            </button>
-           <button onClick={() => setDashboardTab('calidad')} className={`pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'calidad' ? 'border-b-4 border-emerald-500 font-bold text-emerald-700' : 'text-slate-500 hover:text-slate-700'}`}>
+           <button onClick={() => setDashboardTab('calidad')} className={`shrink-0 pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'calidad' ? 'border-b-4 border-emerald-500 font-bold text-emerald-700' : 'text-slate-500 hover:text-slate-700'}`}>
              <CheckSquare className="w-5 h-5 mr-2"/> Calidad y Conciliación
            </button>
         </div>
@@ -1709,7 +1947,7 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                     const idoneidadOk = p.perfilFarmacoMeta?.evaluadoPrevioPrimeraDosis;
 
                     // LÓGICA DE PRESENCIA COLABORATIVA (Sustituye al candado)
-                    const otherActiveUsers = (p.activeUsers || []).filter(uid => uid !== currentUser.id);
+                    const otherActiveUsers = listOtherActiveUsers(p, currentUser.id);
                     const otherNames = otherActiveUsers.map(uid => users.find(u => u.id === uid)?.nombre).join(', ');
 
                     let rowColor = "border-b border-slate-100 transition-colors cursor-pointer ";
@@ -1841,7 +2079,7 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                   {allPrms.length === 0 && <tr><td colSpan="6" className="p-8 text-center text-slate-500">No hay PRMs registrados con los filtros actuales.</td></tr>}
                   {allPrms.map((prm, idx) => {
                     const originalPatient = patients.find(px => px.id === prm.patientId);
-                    const otherActiveUsers = originalPatient ? (originalPatient.activeUsers || []).filter(uid => uid !== currentUser.id) : [];
+                    const otherActiveUsers = originalPatient ? listOtherActiveUsers(originalPatient, currentUser.id) : [];
 
                     return (
                     <tr key={idx} onClick={() => onSelect(prm.patientId, 'prm')} className={`border-b border-slate-100 transition-colors hover:bg-orange-50 cursor-pointer`}>
@@ -1923,7 +2161,7 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                   {allMicros.length === 0 && <tr><td colSpan="5" className="p-8 text-center text-slate-500">No hay cultivos registrados con los filtros actuales.</td></tr>}
                   {allMicros.map((mic, idx) => {
                     const originalPatient = patients.find(px => px.id === mic.patientId);
-                    const otherActiveUsers = originalPatient ? (originalPatient.activeUsers || []).filter(uid => uid !== currentUser.id) : [];
+                    const otherActiveUsers = originalPatient ? listOtherActiveUsers(originalPatient, currentUser.id) : [];
 
                     return (
                     <tr key={idx} onClick={() => onSelect(mic.patientId, 'micro')} className={`border-b border-slate-100 transition-colors hover:bg-purple-50 cursor-pointer`}>
@@ -2025,7 +2263,7 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                     const egresoDone = p.conciliacion.egreso.length > 0;
                     const egresoNA = p.conciliacion.egresoNA;
 
-                    const otherActiveUsers = (p.activeUsers || []).filter(uid => uid !== currentUser.id);
+                    const otherActiveUsers = listOtherActiveUsers(p, currentUser.id);
 
                     return (
                       <tr key={idx} onClick={() => onSelect(p.id, 'conciliation')} className={`border-b border-slate-100 transition-colors hover:bg-emerald-50 cursor-pointer`}>
@@ -2077,24 +2315,55 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
   const sc = calculateSC(d.peso, d.altura);
   const pesoIdeal = calculateIdealWeight(d.altura, d.genero);
   const pesoAjustado = calculateAdjustedWeight(d.peso, pesoIdeal);
+  const [comorbiditySelection, setComorbiditySelection] = useState('');
+  const [otherComorbidity, setOtherComorbidity] = useState('');
 
   const handleChange = (e) => updatePatient({ demographics: { ...d, [e.target.name]: e.target.value } });
 
-  const comorbidityValue = (d.comorbilidades || '').trim();
-  const isComorbidityPredefined = COMORBILIDADES_PREDEFINIDAS.includes(comorbidityValue);
-  const comorbiditySelectValue = d.comorbilidadesTipo || (comorbidityValue ? (isComorbidityPredefined ? comorbidityValue : 'OTRO') : '');
+  const comorbidityItems = useMemo(
+    () =>
+      (d.comorbilidades || '')
+        .split(/[;,|\n]+/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    [d.comorbilidades]
+  );
 
-  const handleComorbiditySelectChange = (e) => {
-    const selected = e.target.value;
-    if (selected === 'OTRO') {
-      updatePatient({ demographics: { ...d, comorbilidadesTipo: 'OTRO', comorbilidades: isComorbidityPredefined ? '' : comorbidityValue } });
-      return;
-    }
-    updatePatient({ demographics: { ...d, comorbilidadesTipo: selected, comorbilidades: selected } });
+  const persistComorbidities = (items) => {
+    updatePatient({ demographics: { ...d, comorbilidadesTipo: '', comorbilidades: items.join('; ') } });
   };
 
-  const handleComorbidityOtherChange = (e) => {
-    updatePatient({ demographics: { ...d, comorbilidadesTipo: 'OTRO', comorbilidades: e.target.value } });
+  const addComorbidity = (rawValue) => {
+    const value = (rawValue || '').trim();
+    if (!value) return;
+
+    if (value.toLowerCase() === 'sin comorbilidades') {
+      persistComorbidities(['Sin comorbilidades']);
+      return;
+    }
+
+    const next = comorbidityItems.filter((item) => item.toLowerCase() !== 'sin comorbilidades');
+    const alreadyExists = next.some((item) => item.toLowerCase() === value.toLowerCase());
+    if (alreadyExists) return;
+
+    persistComorbidities([...next, value]);
+  };
+
+  const handleAddComorbidity = () => {
+    if (!comorbiditySelection) return;
+
+    if (comorbiditySelection === 'OTRO') {
+      addComorbidity(otherComorbidity);
+      setOtherComorbidity('');
+      return;
+    }
+
+    addComorbidity(comorbiditySelection);
+    setComorbiditySelection('');
+  };
+
+  const removeComorbidityAt = (indexToRemove) => {
+    persistComorbidities(comorbidityItems.filter((_, index) => index !== indexToRemove));
   };
 
   // DETECCIÓN DE DUPLICADOS EN TIEMPO REAL (Solo por Nombre y Fecha de Nacimiento)
@@ -2165,7 +2434,7 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
           <div className="flex flex-col">
             <label className="fc-label truncate">Identificador Interno (FV)</label>
-            <input type="text" name="identificadorInterno" readOnly value={d.identificadorInterno || ''} className="fc-input bg-slate-100 text-slate-500 font-mono border cursor-not-allowed" title="ID Auto-generado por el sistema" />
+            <input type="text" name="identificadorInterno" value={d.identificadorInterno || ''} onChange={handleChange} className="fc-input font-mono" title="ID interno editable" />
           </div>
           <FormInput label="No. de Paciente (Expediente)" name="numeroPaciente" value={d.numeroPaciente} onChange={handleChange} />
           <FormInput label="No. de Episodio" name="numeroEpisodio" value={d.numeroEpisodio} onChange={handleChange} />
@@ -2197,20 +2466,67 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
           <div className="flex flex-col"><label className="fc-label">Antecedentes Médicos</label><textarea name="antecedentes" value={d.antecedentes || ''} onChange={handleChange} rows={2} className="fc-textarea"></textarea></div>
           <div className="flex flex-col">
             <label className="fc-label">Comorbilidades Actuales</label>
-            <select value={comorbiditySelectValue} onChange={handleComorbiditySelectChange} className="fc-input">
-              <option value="">Sel...</option>
-              {COMORBILIDADES_PREDEFINIDAS.map((item) => <option key={item} value={item}>{item}</option>)}
-              <option value="OTRO">OTRO</option>
-            </select>
-            {comorbiditySelectValue === 'OTRO' && (
-              <input
-                type="text"
-                value={d.comorbilidades || ''}
-                onChange={handleComorbidityOtherChange}
-                placeholder="Especificar comorbilidad..."
-                className="fc-input mt-2"
-              />
-            )}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <select value={comorbiditySelection} onChange={(e) => setComorbiditySelection(e.target.value)} className="fc-input">
+                  <option value="">Sel...</option>
+                  {COMORBILIDADES_PREDEFINIDAS.map((item) => <option key={item} value={item}>{item}</option>)}
+                  <option value="OTRO">OTRO</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={handleAddComorbidity}
+                  className="px-3 py-2 text-sm font-medium rounded-md border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
+                >
+                  Agregar
+                </button>
+              </div>
+
+              {comorbiditySelection === 'OTRO' && (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={otherComorbidity}
+                    onChange={(e) => setOtherComorbidity(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddComorbidity();
+                      }
+                    }}
+                    placeholder="Especificar comorbilidad..."
+                    className="fc-input"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddComorbidity}
+                    className="px-3 py-2 text-sm font-medium rounded-md border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
+                  >
+                    Agregar
+                  </button>
+                </div>
+              )}
+
+              {comorbidityItems.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {comorbidityItems.map((item, index) => (
+                    <span key={`${item}-${index}`} className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-100 text-slate-700 text-xs border border-slate-200">
+                      {item}
+                      <button
+                        type="button"
+                        onClick={() => removeComorbidityAt(index)}
+                        className="text-slate-500 hover:text-red-600 transition-colors"
+                        title="Eliminar comorbilidad"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500">Sin comorbilidades registradas.</p>
+              )}
+            </div>
           </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
@@ -2626,6 +2942,7 @@ function PharmacotherapyTab({ patient, updatePatient }) {
 
 function PharmaSection({ title, items, updateItem, updateItemStatus, removeItem, patient, theme }) {
   const headerColors = { orange: 'bg-orange-100 text-orange-900 border-orange-200', red: 'bg-red-100 text-red-900 border-red-200', blue: 'bg-slate-100 text-slate-800 border-slate-200' };
+  const isMarSection = title === 'Medicamentos de Alto Riesgo';
 
   const sortedItems = [...items].sort((a, b) => {
     if (a.estado === 'Suspendido' && b.estado !== 'Suspendido') return 1;
@@ -2634,8 +2951,31 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, removeItem,
   });
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mb-6 print:border-slate-300 print:shadow-none">
-      <div className={`px-4 py-2 font-bold border-b ${headerColors[theme]} print:bg-slate-100 print:text-black print:border-slate-300`}>{title}</div>
+    <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-visible mb-6 print:border-slate-300 print:shadow-none">
+      <div className={`px-4 py-2 font-bold border-b ${headerColors[theme]} print:bg-slate-100 print:text-black print:border-slate-300 flex items-center justify-between gap-3`}>
+        <span>{title}</span>
+        {isMarSection && (
+          <div className="relative group print:hidden">
+            <button
+              type="button"
+              className="inline-flex items-center justify-center rounded-full p-1.5 bg-white/70 border border-red-300 text-red-700 hover:bg-white focus:outline-none focus:ring-2 focus:ring-red-400"
+              aria-label="Ver guía de medicamentos de alto riesgo"
+              title="Ver recomendaciones MAR"
+            >
+              <CircleHelp className="w-4 h-4" />
+            </button>
+            <div className="absolute right-0 top-10 z-20 w-72 rounded-lg border border-red-200 bg-white p-3 text-xs text-slate-700 shadow-xl opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+              <p className="font-bold text-red-800 mb-1">MAR</p>
+              <p className="text-slate-500 mb-2">Medicamentos de alto riesgo (ejemplos):</p>
+              <ol className="list-decimal pl-4 space-y-0.5">
+                {MAR_RECOMENDACIONES.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ol>
+            </div>
+          </div>
+        )}
+      </div>
       <div className="overflow-x-auto overscroll-x-contain print:overflow-visible">
         <table className="min-w-[1400px] text-xs sm:text-sm border-collapse">
           <thead className="bg-slate-50 border-b print:bg-white">
@@ -2979,15 +3319,6 @@ function RamTab({ patient, updatePatient }) {
         ))}
       </div>
     </div>
-  );
-}
-
-// --- Componentes UI Auxiliares ---
-function TabButton({ icon, label, isActive, onClick }) {
-  return (
-    <button onClick={onClick} className={`w-full flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors ${isActive ? 'bg-blue-50 text-blue-700 border border-blue-200 font-semibold' : 'text-slate-600 hover:bg-slate-50 border border-transparent'}`}>
-      <span className={`mr-3 ${isActive ? 'text-blue-600' : 'text-slate-400'}`}>{icon}</span>{label}
-    </button>
   );
 }
 
