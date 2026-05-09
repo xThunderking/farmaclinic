@@ -248,6 +248,107 @@ async function replacePatients(patients) {
   }
 }
 
+async function upsertPatient(patient) {
+  if (!patient?.id) {
+    throw new Error('Paciente invalido para upsert.');
+  }
+
+  const db = await initPool();
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const p = patient;
+    const d = p.demographics || {};
+    const baseId = await upsertPatientBase(conn, p);
+
+    await conn.execute(
+      `
+        INSERT INTO episodios (
+          id, paciente_base_id, eliminado, identificador_interno, numero_paciente, numero_episodio,
+          nombre, fecha_nacimiento, genero, peso, altura, ingreso, egreso, habitacion, medico,
+          motivo_ingreso, diagnostico_principal, tipo_paciente, especialidad, alergias,
+          intolerancias, antecedentes, comorbilidades, observaciones_generales, fuma,
+          alcoholismo, toxicomania, detalles_adicciones, datos_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          paciente_base_id = VALUES(paciente_base_id),
+          eliminado = VALUES(eliminado),
+          identificador_interno = VALUES(identificador_interno),
+          numero_paciente = VALUES(numero_paciente),
+          numero_episodio = VALUES(numero_episodio),
+          nombre = VALUES(nombre),
+          fecha_nacimiento = VALUES(fecha_nacimiento),
+          genero = VALUES(genero),
+          peso = VALUES(peso),
+          altura = VALUES(altura),
+          ingreso = VALUES(ingreso),
+          egreso = VALUES(egreso),
+          habitacion = VALUES(habitacion),
+          medico = VALUES(medico),
+          motivo_ingreso = VALUES(motivo_ingreso),
+          diagnostico_principal = VALUES(diagnostico_principal),
+          tipo_paciente = VALUES(tipo_paciente),
+          especialidad = VALUES(especialidad),
+          alergias = VALUES(alergias),
+          intolerancias = VALUES(intolerancias),
+          antecedentes = VALUES(antecedentes),
+          comorbilidades = VALUES(comorbilidades),
+          observaciones_generales = VALUES(observaciones_generales),
+          fuma = VALUES(fuma),
+          alcoholismo = VALUES(alcoholismo),
+          toxicomania = VALUES(toxicomania),
+          detalles_adicciones = VALUES(detalles_adicciones),
+          datos_json = VALUES(datos_json)
+      `,
+      [
+        p.id,
+        baseId,
+        p.deleted ? 1 : 0,
+        d.identificadorInterno || '',
+        d.numeroPaciente || '',
+        d.numeroEpisodio || '',
+        d.nombre || '',
+        d.fechaNacimiento || '',
+        d.genero || '',
+        d.peso || null,
+        d.altura || null,
+        d.ingreso || '',
+        d.egreso || '',
+        d.habitacion || '',
+        d.medico || '',
+        d.motivoIngreso || '',
+        d.diagnosticoPrincipal || '',
+        d.tipoPaciente || '',
+        d.especialidad || '',
+        d.alergias || '',
+        d.intolerancias || '',
+        d.antecedentes || '',
+        d.comorbilidades || '',
+        d.observacionesGenerales || '',
+        d.fuma || '',
+        d.alcoholismo || '',
+        d.toxicomania || '',
+        d.detallesAdicciones || '',
+        JSON.stringify(p),
+      ]
+    );
+
+    await conn.execute('DELETE FROM episodio_usuarios_activos WHERE episodio_id = ?', [p.id]);
+    for (const uid of p.activeUsers || []) {
+      if (!uid) continue;
+      await conn.execute('INSERT INTO episodio_usuarios_activos (episodio_id, usuario_id) VALUES (?, ?)', [p.id, uid]);
+    }
+
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
 async function listPatients() {
   const db = await initPool();
   const [rows] = await db.execute('SELECT datos_json FROM episodios ORDER BY ingreso ASC, creado_en ASC');
@@ -279,5 +380,6 @@ module.exports = {
   replaceUsers,
   listPatients,
   replacePatients,
+  upsertPatient,
   bootstrap,
 };

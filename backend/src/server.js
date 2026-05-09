@@ -7,6 +7,7 @@ const {
   bootstrap,
   replaceUsers,
   replacePatients,
+  upsertPatient,
   listUsers,
 } = require('./db');
 
@@ -129,6 +130,27 @@ app.put('/api/sync/patients', async (req, res) => {
     res.json({ ok: true, total: patients.length });
   } catch (error) {
     res.status(500).json({ error: 'No se pudo sincronizar pacientes.' });
+  }
+});
+
+app.put('/api/sync/patient', async (req, res) => {
+  const { patient } = req.body || {};
+  const sourceClientId = String(req.header('x-client-id') || '');
+
+  if (!patient || typeof patient !== 'object' || !patient.id) {
+    return res.status(400).json({ error: 'patient valido es obligatorio.' });
+  }
+
+  try {
+    await upsertPatient(patient);
+    broadcastSseEvent(
+      'patients-updated',
+      { ts: Date.now(), total: 1, mode: 'single', patientId: patient.id },
+      { excludeClientId: sourceClientId }
+    );
+    res.json({ ok: true, id: patient.id });
+  } catch (error) {
+    res.status(500).json({ error: 'No se pudo sincronizar el paciente.' });
   }
 });
 

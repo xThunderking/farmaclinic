@@ -110,7 +110,8 @@ const PREGUNTAS_ENTREVISTA = [
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
 const SESSION_USER_KEY = 'farmaclinic_current_user';
 const CLIENT_ID_KEY = 'farmaclinic_client_id';
-const APP_VERSION = 'FARMA 1.1';
+const APP_VERSION = 'FARMA 1.2';
+const ADULTO_MAYOR_EDAD = 65;
 const PRESENCE_HEARTBEAT_MS = 45000;
 const PRESENCE_TTL_MS = 180000;
 
@@ -394,6 +395,36 @@ const exportToCSV = (filename, rows) => {
   document.body.removeChild(link);
 };
 
+const getPatientSyncPlan = (prevPatients = [], nextPatients = []) => {
+  const prevById = new Map((prevPatients || []).map((p) => [p.id, p]));
+  const nextById = new Map((nextPatients || []).map((p) => [p.id, p]));
+
+  if (prevById.size !== nextById.size) {
+    return { mode: 'bulk', changedPatient: null };
+  }
+
+  for (const id of prevById.keys()) {
+    if (!nextById.has(id)) {
+      return { mode: 'bulk', changedPatient: null };
+    }
+  }
+
+  const changedPatients = [];
+  for (const [id, patient] of nextById.entries()) {
+    if (prevById.get(id) !== patient) changedPatients.push(patient);
+  }
+
+  if (changedPatients.length === 0) {
+    return { mode: 'none', changedPatient: null };
+  }
+
+  if (changedPatients.length === 1) {
+    return { mode: 'single', changedPatient: changedPatients[0] };
+  }
+
+  return { mode: 'bulk', changedPatient: null };
+};
+
 // --- Estados Iniciales Mock ---
 const initialUsers = [
   { id: 'u1', username: 'CoordinadorFV', password: 'FarmaFV', role: 'admin', nombre: 'Admin FV', puesto: 'Coordinador', numEmpleado: '001', horario: 'Matutino' },
@@ -423,6 +454,7 @@ export default function App() {
   const skipNextUsersSyncRef = useRef(false);
   const skipNextPatientsSyncRef = useRef(false);
   const remoteRefreshTimerRef = useRef(null);
+  const previousPatientsRef = useRef(initialPatients);
 
   useEffect(() => {
     let mounted = true;
@@ -438,6 +470,7 @@ export default function App() {
         );
 
         setUsers(incomingUsers);
+        previousPatientsRef.current = normalizedPatients;
         setPatients(normalizedPatients);
         setSyncError('');
         loadedFromDbRef.current = true;
@@ -503,6 +536,7 @@ export default function App() {
         skipNextUsersSyncRef.current = true;
         skipNextPatientsSyncRef.current = true;
         setUsers(incomingUsers);
+        previousPatientsRef.current = normalizedPatients;
         setPatients(normalizedPatients);
         setSyncError('');
       } catch (_err) {
@@ -550,19 +584,38 @@ export default function App() {
   }, [users]);
 
   useEffect(() => {
+    const prevPatients = previousPatientsRef.current;
+    previousPatientsRef.current = patients;
+
     if (!loadedFromDbRef.current) return;
+
     if (skipNextPatientsSyncRef.current) {
       skipNextPatientsSyncRef.current = false;
       return;
     }
 
+    const syncPlan = getPatientSyncPlan(prevPatients, patients);
+    if (syncPlan.mode === 'none') return;
+
     if (patientsSyncTimerRef.current) clearTimeout(patientsSyncTimerRef.current);
     patientsSyncTimerRef.current = setTimeout(() => {
+      if (syncPlan.mode === 'single' && syncPlan.changedPatient?.id) {
+        apiFetch('/api/sync/patient', {
+          method: 'PUT',
+          body: JSON.stringify({ patient: syncPlan.changedPatient }),
+        })
+          .then(() => setSyncError(''))
+          .catch(() => setSyncError('No se pudo sincronizar el paciente en tiempo real.'));
+        return;
+      }
+
       apiFetch('/api/sync/patients', {
         method: 'PUT',
         body: JSON.stringify({ patients }),
-      }).catch(() => setSyncError('No se pudo sincronizar pacientes con BD.'));
-    }, 500);
+      })
+        .then(() => setSyncError(''))
+        .catch(() => setSyncError('No se pudo sincronizar pacientes con BD.'));
+    }, syncPlan.mode === 'single' ? 120 : 260);
 
     return () => {
       if (patientsSyncTimerRef.current) clearTimeout(patientsSyncTimerRef.current);
@@ -1226,6 +1279,7 @@ function PrintPatientReport({ patient }) {
           { key: 'dosis', label: 'Dosis' },
           { key: 'via', label: 'Vía' },
           { key: 'desdeCuando', label: 'Desde cuándo' },
+          { key: 'ultimaTomaMedicamento', label: 'Última toma medicamento' },
           { key: 'activo', label: 'Estado' },
           { key: 'diasTratamiento', label: 'Días tratamiento' },
           { key: 'sabeParaQue', label: 'Sabe para qué' },
@@ -1658,6 +1712,7 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
   const [searchTerm, setSearchTerm] = useState('');
   const [filterMonth, setFilterMonth] = useState('');
   const [filterYear, setFilterYear] = useState('');
+  const [patientColumnFilter, setPatientColumnFilter] = useState({ key: '', direction: '' });
 
   // PRM Filters
   const [filterPrmCategory, setFilterPrmCategory] = useState('');
@@ -1685,13 +1740,63 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
       const term = searchTerm.toLowerCase();
       return (
         (p.demographics.nombre && p.demographics.nombre.toLowerCase().includes(term)) ||
-        (p.demographics.identificadorInterno && p.demographics.identificadorInterno.toLowerCase().includes(term)) ||
-        (p.demographics.numeroPaciente && p.demographics.numeroPaciente.toLowerCase().includes(term)) ||
-        (p.demographics.diagnosticoPrincipal && p.demographics.diagnosticoPrincipal.toLowerCase().includes(term))
+        (p.demographics.habitacion && p.demographics.habitacion.toLowerCase().includes(term))
       );
     }
     return true;
   });
+
+  const getPatientColumnValue = (patient, key) => {
+    switch (key) {
+      case 'ingreso':
+        return patient.demographics.ingreso ? new Date(patient.demographics.ingreso).getTime() : 0;
+      case 'paciente':
+        return patient.demographics.nombre || '';
+      case 'ubicacion':
+        return patient.demographics.habitacion || '';
+      case 'diagnostico':
+        return patient.demographics.diagnosticoPrincipal || '';
+      case 'estancia':
+        return calculateDaysOfUse(patient.demographics.ingreso, patient.demographics.egreso);
+      case 'medsActivos':
+        return (patient.perfilFarmaco || []).filter(f => f.estado === 'Activo').length;
+      default:
+        return '';
+    }
+  };
+
+  const togglePatientColumnFilter = (columnKey) => {
+    setPatientColumnFilter(prev => {
+      if (prev.key !== columnKey) return { key: columnKey, direction: 'asc' };
+      if (prev.direction === 'asc') return { key: columnKey, direction: 'desc' };
+      return { key: '', direction: '' };
+    });
+  };
+
+  const getPatientColumnIndicator = (columnKey) => {
+    if (patientColumnFilter.key !== columnKey) return '↕';
+    return patientColumnFilter.direction === 'asc' ? '↑' : '↓';
+  };
+
+  const patientRows = useMemo(() => {
+    const rows = [...filteredPatients];
+    const { key, direction } = patientColumnFilter;
+    if (!key || !direction) return rows;
+
+    const factor = direction === 'asc' ? 1 : -1;
+    rows.sort((a, b) => {
+      const aValue = getPatientColumnValue(a, key);
+      const bValue = getPatientColumnValue(b, key);
+
+      if (typeof aValue === 'number' && typeof bValue === 'number') {
+        return (aValue - bValue) * factor;
+      }
+
+      return String(aValue).localeCompare(String(bValue), 'es', { sensitivity: 'base', numeric: true }) * factor;
+    });
+
+    return rows;
+  }, [filteredPatients, patientColumnFilter]);
 
   // Métricas de Pacientes
   const activeCount = patients.filter(p => !p.deleted && !p.demographics.egreso).length;
@@ -1890,7 +1995,7 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
               <div className="flex flex-wrap gap-2 items-center w-full md:w-auto">
                 <div className="relative">
                   <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-                  <input type="text" placeholder="Buscar ID o paciente..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm shadow-sm w-full sm:w-48" />
+                  <input type="text" placeholder="Buscar nombre o habitación..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm shadow-sm w-full sm:w-56" />
                 </div>
                 <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)} className="py-2 px-3 border border-slate-300 rounded-lg text-sm shadow-sm text-slate-700">
                   <option value="">Mes (Todos)</option>{MESES.map(m => <option key={m.val} value={m.val}>{m.label}</option>)}
@@ -1910,22 +2015,48 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                 <table className="min-w-[1100px] w-full text-left border-collapse">
                   <thead className="bg-slate-800 text-white border-b border-slate-700">
                     <tr>
-                      <th className="p-3 font-semibold text-sm w-24">Ingreso</th>
-                      <th className="p-3 font-semibold text-sm">Paciente y Alertas clínicas</th>
-                      <th className="p-3 font-semibold text-sm">Ubicación y Médico</th>
-                      <th className="p-3 font-semibold text-sm">Diagnóstico Principal</th>
-                      <th className="p-3 font-semibold text-sm text-center">Estancia</th>
-                      <th className="p-3 font-semibold text-sm text-center" title="Medicamentos Activos / Total">Meds (Act.)</th>
+                      <th className="p-3 font-semibold text-sm w-24">
+                        <button type="button" onClick={() => togglePatientColumnFilter('ingreso')} className="inline-flex items-center gap-1 hover:text-blue-200 transition-colors">
+                          Ingreso <span className="text-[11px] opacity-90">{getPatientColumnIndicator('ingreso')}</span>
+                        </button>
+                      </th>
+                      <th className="p-3 font-semibold text-sm">
+                        <button type="button" onClick={() => togglePatientColumnFilter('paciente')} className="inline-flex items-center gap-1 hover:text-blue-200 transition-colors">
+                          Paciente y Alertas clínicas <span className="text-[11px] opacity-90">{getPatientColumnIndicator('paciente')}</span>
+                        </button>
+                      </th>
+                      <th className="p-3 font-semibold text-sm">
+                        <button type="button" onClick={() => togglePatientColumnFilter('ubicacion')} className="inline-flex items-center gap-1 hover:text-blue-200 transition-colors">
+                          Ubicación y Médico <span className="text-[11px] opacity-90">{getPatientColumnIndicator('ubicacion')}</span>
+                        </button>
+                      </th>
+                      <th className="p-3 font-semibold text-sm">
+                        <button type="button" onClick={() => togglePatientColumnFilter('diagnostico')} className="inline-flex items-center gap-1 hover:text-blue-200 transition-colors">
+                          Diagnóstico Principal <span className="text-[11px] opacity-90">{getPatientColumnIndicator('diagnostico')}</span>
+                        </button>
+                      </th>
+                      <th className="p-3 font-semibold text-sm text-center">
+                        <button type="button" onClick={() => togglePatientColumnFilter('estancia')} className="inline-flex items-center gap-1 hover:text-blue-200 transition-colors">
+                          Estancia <span className="text-[11px] opacity-90">{getPatientColumnIndicator('estancia')}</span>
+                        </button>
+                      </th>
+                      <th className="p-3 font-semibold text-sm text-center" title="Medicamentos Activos / Total">
+                        <button type="button" onClick={() => togglePatientColumnFilter('medsActivos')} className="inline-flex items-center gap-1 hover:text-blue-200 transition-colors">
+                          Meds (Act.) <span className="text-[11px] opacity-90">{getPatientColumnIndicator('medsActivos')}</span>
+                        </button>
+                      </th>
                       <th className="p-3 font-semibold text-sm text-center">Acciones</th>
                     </tr>
                   </thead>
                   <tbody>
-                  {filteredPatients.length === 0 && <tr><td colSpan="7" className="p-8 text-center text-slate-500">No hay registros para esta vista o filtros seleccionados.</td></tr>}
-                  {filteredPatients.map(p => {
+                  {patientRows.length === 0 && <tr><td colSpan="7" className="p-8 text-center text-slate-500">No hay registros para esta vista o filtros seleccionados.</td></tr>}
+                  {patientRows.map(p => {
                     const { years } = calculateAge(p.demographics.fechaNacimiento);
                     const estancia = calculateDaysOfUse(p.demographics.ingreso, p.demographics.egreso);
                     const medsActivos = p.perfilFarmaco.filter(f => f.estado === 'Activo').length;
                     const medsTotal = p.perfilFarmaco.length;
+                    const hasPolimedicado = medsActivos > 5;
+                    const hasAdultoMayor = Number(years) >= ADULTO_MAYOR_EDAD;
                     
                     const creatData = p.labs["Creatinina Sérica"] || [];
                     const latestCreat = creatData.length > 0 ? creatData[creatData.length - 1].value : '';
@@ -1979,6 +2110,8 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                           <div className="flex space-x-1.5 mt-1 flex-wrap">
                             {/* ETIQUETA COLABORATIVA EN LUGAR DE CANDADO ROJO */}
                             {otherActiveUsers.length > 0 && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800 mb-1" title={`Editando: ${otherNames}`}><Users className="w-3 h-3 mr-1"/> EDITANDO ({otherActiveUsers.length})</span>}
+                            {hasAdultoMayor && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 mb-1">ADULTO MAYOR ({ADULTO_MAYOR_EDAD}+)</span>}
+                            {hasPolimedicado && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-200 text-amber-900 mb-1">PACIENTE POLIMEDICADO +5</span>}
                             {hasAlergias && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-600 text-white mb-1" title={p.demographics.alergias}>ALERGIAS</span>}
                             {idoneidadOk && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-200 text-green-800 mb-1" title="Idoneidad validada previo a primera dosis"><CheckCircle className="w-3 h-3 mr-1"/> IDONEIDAD OK</span>}
                             {hasAltoRiesgo && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-200 text-red-800 mb-1">ALTO RIESGO</span>}
@@ -2591,7 +2724,19 @@ function ConciliationTab({ patient, updatePatient }) {
   const handleAnswer = (qId, value) => updatePatient({ interview: { ...i, [qId]: value } });
   
   const addItem = (type) => {
-    const newItem = { id: Date.now().toString(), principio: '', marcaComercial: '', dosis: '', via: '', desdeCuando: '', activo: 'Continua', diasTratamiento: '', sabeParaQue: 'No', observacion: '' };
+    const newItem = {
+      id: Date.now().toString(),
+      principio: '',
+      marcaComercial: '',
+      dosis: '',
+      via: '',
+      desdeCuando: '',
+      ultimaTomaMedicamento: '',
+      activo: 'Continua',
+      diasTratamiento: '',
+      sabeParaQue: 'No',
+      observacion: ''
+    };
     updatePatient({ conciliacion: { ...conc, [type]: [...(conc[type] || []), newItem] } });
   };
   const updateItem = (type, id, field, value) => {
@@ -2731,9 +2876,11 @@ function ConciliationTab({ patient, updatePatient }) {
 
 function ConciliationTable({ items, type, onUpdate, onRemove }) {
   const isIngreso = type === 'ingreso';
+  const emptyColSpan = isIngreso ? 9 : 8;
+
   return (
     <div className="overflow-x-auto overscroll-x-contain print:overflow-visible">
-      <table className="min-w-[980px] text-xs sm:text-sm border-collapse bg-white border border-slate-200 shadow-sm rounded-lg print:shadow-none print:border-slate-300">
+      <table className="min-w-[1120px] text-xs sm:text-sm border-collapse bg-white border border-slate-200 shadow-sm rounded-lg print:shadow-none print:border-slate-300">
         <thead className="bg-slate-50 border-b print:bg-slate-100">
           <tr>
             <th className="p-2 text-left font-semibold">Principio Activo</th>
@@ -2741,6 +2888,7 @@ function ConciliationTable({ items, type, onUpdate, onRemove }) {
             <th className="p-2 text-left font-semibold w-24">Dosis/Frec.</th>
             <th className="p-2 text-left font-semibold w-20">Vía</th>
             {isIngreso && <th className="p-2 text-left font-semibold w-32">Desde Cuándo</th>}
+            {isIngreso && <th className="p-2 text-left font-semibold w-36">Última toma medicamento</th>}
             {!isIngreso && <th className="p-2 text-left font-semibold w-28" title="Cuántos días lo tomará al egreso">Días Tratm.</th>}
             {!isIngreso && <th className="p-2 text-center font-semibold w-24" title="¿Sabe para qué se lo tomará?">¿Sabe uso?</th>}
             {isIngreso && <th className="p-2 text-left font-semibold w-28">Estado</th>}
@@ -2749,7 +2897,7 @@ function ConciliationTable({ items, type, onUpdate, onRemove }) {
           </tr>
         </thead>
         <tbody>
-          {items.length === 0 && <tr><td colSpan={isIngreso ? "9" : "8"} className="p-4 text-center text-slate-500">No hay medicamentos registrados.</td></tr>}
+          {items.length === 0 && <tr><td colSpan={emptyColSpan} className="p-4 text-center text-slate-500">No hay medicamentos registrados.</td></tr>}
           {items.map(item => (
             <tr key={item.id} className="border-b hover:bg-slate-50">
               <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" value={item.principio} onChange={(e) => onUpdate(type, item.id, 'principio', e.target.value)} /></td>
@@ -2760,6 +2908,7 @@ function ConciliationTable({ items, type, onUpdate, onRemove }) {
               <td className="p-1"><select className="w-full border-slate-300 rounded text-sm p-1 print:appearance-none print:border-none print:bg-transparent" value={item.via} onChange={(e) => onUpdate(type, item.id, 'via', e.target.value)}><option value="">-</option>{VIAS.map(v => <option key={v} value={v}>{v}</option>)}</select></td>
               
               {isIngreso && <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" placeholder="Ej. 2 meses" value={item.desdeCuando || ''} onChange={(e) => onUpdate(type, item.id, 'desdeCuando', e.target.value)} /></td>}
+              {isIngreso && <td className="p-1"><input type="date" className="w-full border-slate-300 rounded text-sm p-1 print:border-none print:bg-transparent" value={item.ultimaTomaMedicamento || ''} onChange={(e) => onUpdate(type, item.id, 'ultimaTomaMedicamento', e.target.value)} /></td>}
               
               {!isIngreso && <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" placeholder="Ej. 7 días" value={item.diasTratamiento || ''} onChange={(e) => onUpdate(type, item.id, 'diasTratamiento', e.target.value)} /></td>}
               {!isIngreso && (
