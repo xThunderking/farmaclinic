@@ -3,7 +3,7 @@ import {
   Users, UserPlus, Activity, ClipboardList, 
   Plus, Trash2, AlertTriangle, ShieldAlert, 
   CheckCircle, FileSpreadsheet, Search, Filter,
-  Microscope, Lock, Settings, ShieldCheck, Bug, FileWarning, RefreshCcw, Layers, X, PieChart, ListChecks, TestTube, History, CheckSquare, XCircle, Unlock, CircleHelp
+  Microscope, Lock, Settings, ShieldCheck, Bug, FileWarning, FileText, RefreshCcw, Layers, X, PieChart, ListChecks, TestTube, History, CheckSquare, XCircle, Unlock, CircleHelp
 } from 'lucide-react';
 import AppFooter from './components/layout/AppFooter';
 import TopBar from './components/layout/TopBar';
@@ -110,8 +110,11 @@ const PREGUNTAS_ENTREVISTA = [
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
 const SESSION_USER_KEY = 'farmaclinic_current_user';
 const CLIENT_ID_KEY = 'farmaclinic_client_id';
-const APP_VERSION = 'FARMA 1.2';
+const APP_VERSION = 'FARMA 1.3';
 const ADULTO_MAYOR_EDAD = 65;
+const NOTIF_SIN_CAMBIOS_HORAS = 4;
+const NOTIF_ANTIBIOTICO_DIAS = 5;
+const NOTIF_REFRESH_MS = 60000;
 const PRESENCE_HEARTBEAT_MS = 45000;
 const PRESENCE_TTL_MS = 180000;
 
@@ -455,6 +458,7 @@ export default function App() {
   const skipNextPatientsSyncRef = useRef(false);
   const remoteRefreshTimerRef = useRef(null);
   const previousPatientsRef = useRef(initialPatients);
+  const [notificationNow, setNotificationNow] = useState(Date.now());
 
   useEffect(() => {
     let mounted = true;
@@ -729,6 +733,11 @@ export default function App() {
     };
   }, [isPatientSidebarOpen]);
 
+  useEffect(() => {
+    const timer = setInterval(() => setNotificationNow(Date.now()), NOTIF_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, []);
+
   // --- LÓGICA DE PRESENCIA COLABORATIVA Y NAVEGACIÓN ---
   const handleEnterPatient = (id, targetTab = 'demographics') => {
     const p = patients.find(x => x.id === id);
@@ -746,6 +755,7 @@ export default function App() {
 
         if (patient.id === id) {
           updated = touchPresenceInPatient(updated, currentUser.id, now);
+          updated = { ...updated, lastReviewedAt: now };
         }
 
         if (updated !== patient) changed = true;
@@ -783,6 +793,82 @@ export default function App() {
     setCurrentUser(null);
   };
 
+  const markPatientReviewed = (patientId) => {
+    const now = Date.now();
+    setPatients((prev) => prev.map((p) => (p.id === patientId ? { ...p, lastReviewedAt: now } : p)));
+  };
+
+  const notifications = useMemo(() => {
+    const staleThresholdMs = NOTIF_SIN_CAMBIOS_HORAS * 60 * 60 * 1000;
+    const result = [];
+
+    (patients || []).forEach((patient) => {
+      if (patient.deleted) return;
+      if (patient.demographics?.egreso) return;
+
+      const ingresoTs = patient.demographics?.ingreso ? new Date(patient.demographics.ingreso).getTime() : 0;
+      const lastChangedAt = Number(patient.lastChangedAt || 0);
+      const lastReviewedAt = Number(patient.lastReviewedAt || 0);
+      const lastActivityTs = Math.max(ingresoTs || 0, lastChangedAt, lastReviewedAt);
+
+      if (lastActivityTs > 0) {
+        const idleMs = notificationNow - lastActivityTs;
+        if (idleMs >= staleThresholdMs) {
+          const idleHours = Math.floor(idleMs / (60 * 60 * 1000));
+          result.push({
+            id: `idle-${patient.id}`,
+            type: 'idle',
+            patientId: patient.id,
+            patientName: patient.demographics?.nombre || 'Paciente sin nombre',
+            title: 'Paciente sin revision reciente',
+            message: `Han pasado ${idleHours}h sin cambios o revision del expediente.`,
+            severity: 'warning',
+            sortValue: idleMs,
+          });
+        }
+      }
+
+      const activeAtb = (patient.perfilFarmaco || []).filter(
+        (med) => med.categoria === 'Antibiótico' && med.estado === 'Activo'
+      );
+      const maxDiasAtb = activeAtb.reduce(
+        (max, med) => Math.max(max, calculateDaysOfUse(med.fechaInicio, patient.demographics?.egreso)),
+        0
+      );
+
+      if (maxDiasAtb >= NOTIF_ANTIBIOTICO_DIAS) {
+        result.push({
+          id: `atb-${patient.id}`,
+          type: 'antibiotico',
+          patientId: patient.id,
+          patientName: patient.demographics?.nombre || 'Paciente sin nombre',
+          title: 'Antibiotico prolongado',
+          message: `El paciente acumula ${maxDiasAtb} dias con antibiotico activo.`,
+          severity: 'critical',
+          sortValue: maxDiasAtb,
+        });
+      }
+    });
+
+    const priority = { critical: 2, warning: 1 };
+    return result.sort((a, b) => {
+      const severityDiff = (priority[b.severity] || 0) - (priority[a.severity] || 0);
+      if (severityDiff !== 0) return severityDiff;
+      return (b.sortValue || 0) - (a.sortValue || 0);
+    });
+  }, [patients, notificationNow]);
+
+  const handleNotificationOpen = (notification) => {
+    if (!notification?.patientId) return;
+    const targetTab = notification.type === 'antibiotico' ? 'pharmacotherapy' : 'demographics';
+    handleEnterPatient(notification.patientId, targetTab);
+  };
+
+  const handleNotificationMarkReviewed = (notification) => {
+    if (!notification?.patientId) return;
+    markPatientReviewed(notification.patientId);
+  };
+
   // --- LOGIN ---
   if (bootstrapping) {
     return (
@@ -802,7 +888,8 @@ export default function App() {
   const activePatient = patients.find(p => p.id === activePatientId) || null;
 
   const updatePatient = (updatedData) => {
-    setPatients(prev => prev.map(p => p.id === activePatientId ? { ...p, ...updatedData } : p));
+    const now = Date.now();
+    setPatients(prev => prev.map(p => p.id === activePatientId ? { ...p, ...updatedData, lastChangedAt: now } : p));
   };
 
   const createNewPatientFromModal = (initialData) => {
@@ -816,9 +903,11 @@ export default function App() {
       id: newId,
       pacienteBaseId: newId, 
       deleted: false,
+      lastChangedAt: now,
+      lastReviewedAt: now,
       activeUsers: [currentUser.id], // Ingresamos directamente como activos
       activeUsersLastSeen: { [currentUser.id]: now },
-      demographics: { identificadorInterno: internalIdFinal, numeroPaciente: initialData.numeroPaciente || '', numeroEpisodio: '', nombre: initialData.nombre || '', fechaNacimiento: initialData.fechaNacimiento || '', peso: '', altura: '', ingreso: ingresoFinal, egreso: '', tipoPaciente: '', especialidad: '', toxicomania: '', alcoholismo: '', comorbilidades: '', comorbilidadesTipo: '', observacionesGenerales: '' },
+      demographics: { identificadorInterno: internalIdFinal, numeroPaciente: initialData.numeroPaciente || '', numeroEpisodio: '', nombre: initialData.nombre || '', fechaNacimiento: initialData.fechaNacimiento || '', peso: '', altura: '', ingreso: ingresoFinal, egreso: '', tipoPaciente: '', especialidad: '', embarazada: '', semanasGestacion: '', toxicomania: '', alcoholismo: '', comorbilidades: '', comorbilidadesTipo: '', observacionesGenerales: '' },
       labs: {}, interview: {}, conciliacion: { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false }, 
       perfilFarmacoMeta: { evaluadoPrevioPrimeraDosis: false },
       perfilFarmaco: [], solucionesIV: [], prms: [], interacciones: [], ram: [], microbiologia: []
@@ -841,6 +930,8 @@ export default function App() {
         id: newId,
         pacienteBaseId: baseId,
         deleted: false,
+      lastChangedAt: now,
+      lastReviewedAt: now,
         activeUsers: [currentUser.id],
         activeUsersLastSeen: { [currentUser.id]: now },
         demographics: {
@@ -855,6 +946,8 @@ export default function App() {
             medico: '',
             tipoPaciente: '',
             especialidad: '',
+          embarazada: '',
+          semanasGestacion: '',
             observacionesGenerales: ''
         },
         labs: {}, interview: {}, conciliacion: { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false },
@@ -893,7 +986,14 @@ export default function App() {
   if (!activePatientId) {
     return (
       <div className="min-h-screen bg-slate-100 flex flex-col relative overflow-x-hidden">
-        <TopBar currentUser={currentUser} onLogout={handleLogoutWithUnlock} onAdmin={() => setViewingAdmin(true)} />
+        <TopBar
+          currentUser={currentUser}
+          onLogout={handleLogoutWithUnlock}
+          onAdmin={() => setViewingAdmin(true)}
+          notifications={notifications}
+          onNotificationOpen={handleNotificationOpen}
+          onNotificationMarkReviewed={handleNotificationMarkReviewed}
+        />
         {syncError && <div className="mx-8 mt-4 bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded text-sm">{syncError}</div>}
         <Dashboard 
            patients={patients} 
@@ -1001,6 +1101,9 @@ export default function App() {
         onBack={handleExitPatient}
         showSidebarToggle={true}
         onToggleSidebar={() => setIsPatientSidebarOpen((prev) => !prev)}
+        notifications={notifications}
+        onNotificationOpen={handleNotificationOpen}
+        onNotificationMarkReviewed={handleNotificationMarkReviewed}
       />
       {syncError && <div className="mx-6 mt-3 bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded text-sm print:hidden">{syncError}</div>}
       
@@ -1061,7 +1164,7 @@ export default function App() {
             
             {/* INDICADOR DE EDICIÓN COLABORATIVA EN TIEMPO REAL */}
             {otherActiveUserIds.length > 0 ? (
-              <div className="relative mb-4 sm:mb-0 sm:absolute sm:top-0 sm:right-0 bg-amber-100 text-amber-800 border border-amber-200 sm:border-l sm:border-b sm:border-t-0 sm:border-r-0 px-4 py-1.5 text-xs font-bold rounded-md sm:rounded-bl-xl sm:rounded-tr-xl flex items-center shadow-sm">
+              <div className="relative mb-4 lg:mb-0 lg:absolute lg:top-0 lg:right-0 bg-amber-100 text-amber-800 border border-amber-200 lg:border-l lg:border-b lg:border-t-0 lg:border-r-0 px-4 py-1.5 text-xs font-bold rounded-md lg:rounded-bl-xl lg:rounded-tr-xl flex items-center shadow-sm">
                   <div className="relative flex h-3 w-3 mr-2">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
@@ -1069,7 +1172,7 @@ export default function App() {
                   Editando simultáneamente con: <span className="ml-1 text-amber-900 underline">{otherActiveNames}</span>
                </div>
             ) : (
-              <div className="relative mb-4 sm:mb-0 sm:absolute sm:top-0 sm:right-0 bg-green-50 text-green-700 border border-green-100 sm:border-l sm:border-b sm:border-t-0 sm:border-r-0 px-3 py-1 text-xs font-bold rounded-md sm:rounded-bl-xl sm:rounded-tr-xl flex items-center">
+              <div className="relative mb-4 lg:mb-0 lg:absolute lg:top-0 lg:right-0 bg-green-50 text-green-700 border border-green-100 lg:border-l lg:border-b lg:border-t-0 lg:border-r-0 px-3 py-1 text-xs font-bold rounded-md lg:rounded-bl-xl lg:rounded-tr-xl flex items-center">
                   <CheckCircle className="w-3 h-3 mr-1" /> Solo tú estás editando este expediente.
                </div>
             )}
@@ -1255,6 +1358,8 @@ function PrintPatientReport({ patient }) {
           { label: 'Diagnóstico principal', keyName: 'diagnosticoPrincipal', value: d.diagnosticoPrincipal },
           { label: 'Alergias', keyName: 'alergias', value: d.alergias },
           { label: 'Intolerancias', keyName: 'intolerancias', value: d.intolerancias },
+          { label: 'Paciente embarazada', keyName: 'embarazada', value: d.embarazada },
+          { label: 'Semanas de gestación', keyName: 'semanasGestacion', value: d.semanasGestacion },
           { label: 'Antecedentes', keyName: 'antecedentes', value: d.antecedentes },
           { label: 'Comorbilidades', keyName: 'comorbilidades', value: d.comorbilidades },
           { label: 'Observaciones generales', keyName: 'observacionesGenerales', value: d.observacionesGenerales },
@@ -1644,8 +1749,8 @@ function AdminPanel({ users, setUsers, onClose, currentUser, onLogout }) {
       <div className="flex-1 p-4 sm:p-6 md:p-8">
         <div className="max-w-5xl mx-auto">
           <h1 className="text-2xl sm:text-3xl font-bold text-slate-800 mb-6">Administración de Usuarios</h1>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8">
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 md:col-span-1">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 md:gap-8">
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 lg:col-span-1">
               <h2 className="text-xl font-bold text-slate-800 mb-4">{editingId ? 'Editar Usuario' : 'Nuevo Usuario'}</h2>
               <div className="space-y-4">
                 <FormInput label="Nombre Completo" value={formData.nombre} onChange={e => setFormData({...formData, nombre: e.target.value})} />
@@ -1665,7 +1770,7 @@ function AdminPanel({ users, setUsers, onClose, currentUser, onLogout }) {
                 {editingId && <button onClick={() => {setEditingId(null); setFormData({ username: '', password: '', role: 'user', nombre: '', puesto: '', numEmpleado: '', horario: '' });}} className="w-full mt-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2 px-4 rounded-lg transition-colors">Cancelar</button>}
               </div>
             </div>
-            <div className="bg-white p-0 rounded-xl shadow-sm border border-slate-200 md:col-span-2 overflow-hidden">
+            <div className="bg-white p-0 rounded-xl shadow-sm border border-slate-200 lg:col-span-2 overflow-hidden">
               <div className="overflow-x-auto print:overflow-visible">
                 <table className="min-w-[720px] w-full text-sm border-collapse">
                   <thead className="bg-slate-50 border-b">
@@ -1718,6 +1823,11 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
   const [filterPrmCategory, setFilterPrmCategory] = useState('');
   const [filterPrmGravity, setFilterPrmGravity] = useState('');
 
+  const getRoomNumber = (habitacion = '') => {
+    const match = String(habitacion || '').match(/\d+/);
+    return match ? Number(match[0]) : null;
+  };
+
   // Lógica de Filtros y Vistas General
   const filteredPatients = patients.filter(p => {
     if (view === 'papelera') {
@@ -1728,7 +1838,7 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
       if (view === 'egresados' && !p.demographics.egreso) return false;
     }
 
-    const dateToFilter = p.demographics.ingreso || p.demographics.egreso;
+    const dateToFilter = p.demographics.ingreso;
     if (filterMonth || filterYear) {
       if (!dateToFilter) return false;
       const [y, m] = dateToFilter.split('-');
@@ -1749,11 +1859,11 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
   const getPatientColumnValue = (patient, key) => {
     switch (key) {
       case 'ingreso':
-        return patient.demographics.ingreso ? new Date(patient.demographics.ingreso).getTime() : 0;
+        return patient.demographics.ingreso ? new Date(`${patient.demographics.ingreso.slice(0, 10)}T00:00:00`).getTime() : 0;
       case 'paciente':
         return patient.demographics.nombre || '';
       case 'ubicacion':
-        return patient.demographics.habitacion || '';
+        return getRoomNumber(patient.demographics.habitacion) ?? (patient.demographics.habitacion || '');
       case 'diagnostico':
         return patient.demographics.diagnosticoPrincipal || '';
       case 'estancia':
@@ -1768,8 +1878,7 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
   const togglePatientColumnFilter = (columnKey) => {
     setPatientColumnFilter(prev => {
       if (prev.key !== columnKey) return { key: columnKey, direction: 'asc' };
-      if (prev.direction === 'asc') return { key: columnKey, direction: 'desc' };
-      return { key: '', direction: '' };
+      return { key: columnKey, direction: prev.direction === 'asc' ? 'desc' : 'asc' };
     });
   };
 
@@ -1969,7 +2078,7 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
         {/* ---------------- VISTA DE PACIENTES ---------------- */}
         {dashboardTab === 'pacientes' && (
           <>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 mb-8">
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-blue-500">
                 <div className="bg-blue-50 p-3 rounded-lg mr-4"><Users className="w-8 h-8 text-blue-600" /></div>
                 <div><p className="text-sm font-medium text-slate-500">Total Pacientes Activos</p><p className="text-3xl font-black text-slate-800">{activeCount}</p></div>
@@ -1985,14 +2094,14 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
             </div>
 
             {/* Barra de Controles (Vistas y Filtros) */}
-            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-col md:flex-row justify-between md:items-center gap-4">
-              <div className="flex flex-wrap gap-1 bg-slate-100 p-1 rounded-lg w-full md:w-auto">
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-col lg:flex-row justify-between lg:items-center gap-4">
+              <div className="flex flex-wrap gap-1 bg-slate-100 p-1 rounded-lg w-full lg:w-auto">
                 <button onClick={() => setView('activos')} className={`px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${view === 'activos' ? 'bg-white text-blue-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Pacientes Activos</button>
                 <button onClick={() => setView('egresados')} className={`px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${view === 'egresados' ? 'bg-white text-blue-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Egresados</button>
                 <button onClick={() => setView('papelera')} className={`px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-colors flex items-center ${view === 'papelera' ? 'bg-red-50 text-red-700 shadow-sm border border-red-200' : 'text-slate-600 hover:text-red-600'}`}><Trash2 className="w-4 h-4 mr-1"/> Papelera</button>
               </div>
               
-              <div className="flex flex-wrap gap-2 items-center w-full md:w-auto">
+              <div className="flex flex-wrap gap-2 items-center w-full lg:w-auto">
                 <div className="relative">
                   <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
                   <input type="text" placeholder="Buscar nombre o habitación..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm shadow-sm w-full sm:w-56" />
@@ -2157,7 +2266,7 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
         {/* ---------------- VISTA EXCLUSIVA DE PRMs ---------------- */}
         {dashboardTab === 'prms' && (
           <>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 mb-8">
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-orange-500">
                 <div className="bg-orange-50 p-3 rounded-lg mr-4"><FileWarning className="w-8 h-8 text-orange-600" /></div>
                 <div><p className="text-sm font-medium text-slate-500">PRMs Detectados</p><p className="text-3xl font-black text-slate-800">{allPrms.length}</p></div>
@@ -2249,7 +2358,7 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
         {/* ---------------- VISTA EXCLUSIVA PROA (MICROBIOLOGÍA) ---------------- */}
         {dashboardTab === 'proa' && (
           <>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 mb-8">
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-purple-500">
                 <div className="bg-purple-50 p-3 rounded-lg mr-4"><TestTube className="w-8 h-8 text-purple-600" /></div>
                 <div><p className="text-sm font-medium text-slate-500">Total de Cultivos</p><p className="text-3xl font-black text-slate-800">{allMicros.length}</p></div>
@@ -2376,6 +2485,7 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                   <thead className="bg-slate-800 text-white border-b border-slate-700">
                     <tr>
                       <th className="p-3 font-semibold text-sm">Paciente y Expediente</th>
+                      <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">Habitación</th>
                       <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">Validación Idoneidad<br/><span className="text-[10px] font-normal text-slate-300">(Previo 1ra Dosis)</span></th>
                       <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">1. Conciliación<br/>al Ingreso</th>
                       <th className="p-3 font-semibold text-sm text-center border-l border-slate-700">2. Transición<br/>de Área</th>
@@ -2384,7 +2494,7 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                     </tr>
                   </thead>
                   <tbody>
-                  {filteredPatients.length === 0 && <tr><td colSpan="6" className="p-8 text-center text-slate-500">No hay registros para mostrar.</td></tr>}
+                  {filteredPatients.length === 0 && <tr><td colSpan="7" className="p-8 text-center text-slate-500">No hay registros para mostrar.</td></tr>}
                   {filteredPatients.map((p, idx) => {
                     const idoneidadDone = p.perfilFarmacoMeta?.evaluadoPrevioPrimeraDosis;
                     const ingresoDone = p.conciliacion.ingreso.length > 0;
@@ -2406,6 +2516,11 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
                              {p.demographics.nombre || 'Sin Nombre'}
                           </p>
                           <p className="text-xs text-slate-500 font-mono">FV: {p.demographics.identificadorInterno || '-'} | Exp: {p.demographics.numeroPaciente} | Ep: {p.demographics.numeroEpisodio}</p>
+                        </td>
+                        <td className="p-3 text-center border-l border-slate-100">
+                          <span className="inline-flex items-center justify-center px-2 py-1 rounded-md bg-slate-100 text-slate-700 text-xs font-semibold min-w-[72px]">
+                            {p.demographics.habitacion || '-'}
+                          </span>
                         </td>
                         <td className="p-3 text-center border-l border-slate-100">
                            <StatusBadge done={idoneidadDone} isNA={false} />
@@ -2451,7 +2566,21 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
   const [comorbiditySelection, setComorbiditySelection] = useState('');
   const [otherComorbidity, setOtherComorbidity] = useState('');
 
-  const handleChange = (e) => updatePatient({ demographics: { ...d, [e.target.name]: e.target.value } });
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    const nextDemographics = { ...d, [name]: value };
+
+    if (name === 'genero' && value !== 'Femenino') {
+      nextDemographics.embarazada = '';
+      nextDemographics.semanasGestacion = '';
+    }
+
+    if (name === 'embarazada' && value !== 'Sí') {
+      nextDemographics.semanasGestacion = '';
+    }
+
+    updatePatient({ demographics: nextDemographics });
+  };
 
   const comorbidityItems = useMemo(
     () =>
@@ -2529,6 +2658,8 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
         altura: dup.demographics.altura,
         alergias: dup.demographics.alergias,
         intolerancias: dup.demographics.intolerancias,
+        embarazada: dup.demographics.embarazada,
+        semanasGestacion: dup.demographics.semanasGestacion,
         toxicomania: dup.demographics.toxicomania,
         alcoholismo: dup.demographics.alcoholismo,
         detallesAdicciones: dup.demographics.detallesAdicciones,
@@ -2595,6 +2726,16 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
           <FormInput label="Motivo de Ingreso / Procedimiento" name="motivoIngreso" value={d.motivoIngreso} onChange={handleChange} />
           <FormInput label="Diagnóstico Principal" name="diagnosticoPrincipal" value={d.diagnosticoPrincipal} onChange={handleChange} />
         </div>
+        {d.genero === 'Femenino' && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <FormSelect label="¿Paciente embarazada?" name="embarazada" value={d.embarazada} onChange={handleChange} options={["Sí", "No"]} />
+            {d.embarazada === 'Sí' ? (
+              <FormInput label="Semanas de gestación" type="number" name="semanasGestacion" value={d.semanasGestacion} onChange={handleChange} placeholder="Ej. 24" />
+            ) : (
+              <div />
+            )}
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div className="flex flex-col"><label className="fc-label">Antecedentes Médicos</label><textarea name="antecedentes" value={d.antecedentes || ''} onChange={handleChange} rows={2} className="fc-textarea"></textarea></div>
           <div className="flex flex-col">
@@ -2720,6 +2861,7 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
 function ConciliationTab({ patient, updatePatient }) {
   const i = patient.interview || {};
   const conc = patient.conciliacion || { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false };
+  const [showInterviewModal, setShowInterviewModal] = useState(false);
 
   const handleAnswer = (qId, value) => updatePatient({ interview: { ...i, [qId]: value } });
   
@@ -2764,22 +2906,48 @@ function ConciliationTab({ patient, updatePatient }) {
 
   return (
     <div className="space-y-8">
-      <section className="fc-panel print:bg-transparent print:border-none print:p-0 print:shadow-none">
-        <h2 className="text-2xl font-bold text-slate-800 border-b pb-2 mb-4">1. Entrevista de conciliación</h2>
-        {sections.map(sec => (
-          <div key={sec} className="mb-4 print:mb-2">
-            <h3 className="text-sm font-bold uppercase text-slate-500 mb-2">{sec}</h3>
-            <div className="space-y-2">
-              {PREGUNTAS_ENTREVISTA.filter(q => q.section === sec).map(q => (
-                <div key={q.id} className="flex flex-col md:flex-row md:items-center justify-between bg-slate-50 border border-slate-200 rounded-xl p-3 shadow-sm print:shadow-none print:border-b print:bg-transparent">
-                  <span className="text-slate-700 text-sm font-medium md:w-1/2 mb-2 md:mb-0">{q.text}</span>
-                  <input type="text" className="fc-input flex-1 md:ml-4" placeholder="Respuesta detallada..." value={i[q.id] || ''} onChange={(e) => handleAnswer(q.id, e.target.value)} />
+      <section className="fc-panel print:hidden">
+        <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center border-b pb-2 mb-2">
+          <h2 className="text-2xl font-bold text-slate-800">1. Entrevista de conciliación</h2>
+          <button onClick={() => setShowInterviewModal(true)} className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded text-sm flex items-center justify-center font-medium">
+            <FileText className="w-4 h-4 mr-1" /> Abrir entrevista
+          </button>
+        </div>
+        <p className="text-sm text-slate-600">Completa la entrevista en una ventana emergente para mantener la vista de conciliación más limpia.</p>
+      </section>
+
+      {showInterviewModal && (
+        <div className="fixed inset-0 bg-slate-900/60 z-50 p-4 flex items-center justify-center print:hidden" onClick={() => setShowInterviewModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="bg-indigo-600 text-white px-4 py-3 flex items-center justify-between">
+              <h3 className="font-bold text-base sm:text-lg">Entrevista de conciliación</h3>
+              <button onClick={() => setShowInterviewModal(false)} className="text-indigo-100 hover:text-white"><X className="w-5 h-5" /></button>
+            </div>
+
+            <div className="p-4 sm:p-6 overflow-y-auto space-y-4">
+              {sections.map(sec => (
+                <div key={sec} className="mb-4">
+                  <h3 className="text-sm font-bold uppercase text-slate-500 mb-2">{sec}</h3>
+                  <div className="space-y-2">
+                    {PREGUNTAS_ENTREVISTA.filter(q => q.section === sec).map(q => (
+                      <div key={q.id} className="flex flex-col md:flex-row md:items-center justify-between bg-slate-50 border border-slate-200 rounded-xl p-3 shadow-sm">
+                        <span className="text-slate-700 text-sm font-medium md:w-1/2 mb-2 md:mb-0">{q.text}</span>
+                        <input type="text" className="fc-input flex-1 md:ml-4" placeholder="Respuesta detallada..." value={i[q.id] || ''} onChange={(e) => handleAnswer(q.id, e.target.value)} />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
+
+            <div className="border-t border-slate-200 px-4 py-3 flex justify-end bg-slate-50">
+              <button onClick={() => setShowInterviewModal(false)} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-sm font-medium">
+                Guardar y cerrar
+              </button>
+            </div>
           </div>
-        ))}
-      </section>
+        </div>
+      )}
 
       <section className="fc-panel print:bg-transparent print:border-none print:p-0 print:shadow-none">
         <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center border-b pb-2 mb-2">
@@ -2942,7 +3110,7 @@ function PharmacotherapyTab({ patient, updatePatient }) {
   const meta = patient.perfilFarmacoMeta || { evaluadoPrevioPrimeraDosis: false };
 
   const addItem = () => {
-    const newItem = { id: Date.now().toString(), categoria: 'General', principio: '', marcaComercial: '', presentacion: '', dosis: '', via: '', frecuencia: '', fechaInicio: new Date().toISOString().split('T')[0], estado: 'Activo', idoneidad: 'Pendiente', fechaSuspension: '', observaciones: '' };
+    const newItem = { id: Date.now().toString(), categoria: '', principio: '', marcaComercial: '', presentacion: '', dosis: '', via: '', frecuencia: '', fechaInicio: new Date().toISOString().split('T')[0], estado: 'Activo', idoneidad: 'Pendiente', fechaSuspension: '', observaciones: '' };
     updatePatient({ perfilFarmaco: [...items, newItem] });
   };
   const updateItem = (id, field, value) => updatePatient({ perfilFarmaco: items.map(item => item.id === id ? { ...item, [field]: value } : item) });
@@ -3010,6 +3178,7 @@ function PharmacotherapyTab({ patient, updatePatient }) {
 
   const updateMeta = (field, value) => updatePatient({ perfilFarmacoMeta: { ...meta, [field]: value } });
 
+  const pendientes = items.filter(i => !CATEGORIAS_FARMACO.includes(i.categoria));
   const atbs = items.filter(i => i.categoria === 'Antibiótico');
   const altos = items.filter(i => i.categoria === 'Alto Riesgo');
   const gens = items.filter(i => i.categoria === 'General');
@@ -3020,7 +3189,7 @@ function PharmacotherapyTab({ patient, updatePatient }) {
         <h2 className="text-2xl font-bold text-slate-800">Prescripciones Intrahospitalarias</h2>
         <div className="flex flex-wrap gap-2 w-full sm:w-auto">
            <button onClick={addSolucion} className="w-full sm:w-auto bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Solución IV</button>
-           <button onClick={addItem} className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
+            <button onClick={addItem} className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
         </div>
       </div>
 
@@ -3031,6 +3200,9 @@ function PharmacotherapyTab({ patient, updatePatient }) {
         </label>
       </div>
 
+      {pendientes.length > 0 && (
+        <PharmaSection title="Clasificación inicial de fármacos" items={pendientes} updateItem={updateItem} updateItemStatus={updateItemStatus} removeItem={removeItem} patient={patient} theme="blue" />
+      )}
       <PharmaSection title="Terapia Antimicrobiana" items={atbs} updateItem={updateItem} updateItemStatus={updateItemStatus} removeItem={removeItem} patient={patient} theme="orange" />
       <PharmaSection title="Medicamentos de Alto Riesgo" items={altos} updateItem={updateItem} updateItemStatus={updateItemStatus} removeItem={removeItem} patient={patient} theme="red" />
       <PharmaSection title="Medicamentos Generales" items={gens} updateItem={updateItem} updateItemStatus={updateItemStatus} removeItem={removeItem} patient={patient} theme="blue" />
@@ -3154,7 +3326,7 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, removeItem,
               
               return (
                 <tr key={item.id} className={`border-b transition-colors ${isSuspended ? 'bg-slate-100 opacity-75 print:opacity-100 print:bg-slate-50' : 'hover:bg-slate-50'}`}>
-                  <td className="p-1"><select className={`w-full border-slate-300 rounded text-xs p-1 print:appearance-none print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.categoria} onChange={(e) => updateItem(item.id, 'categoria', e.target.value)}>{CATEGORIAS_FARMACO.map(c => <option key={c} value={c}>{c}</option>)}</select></td>
+                  <td className="p-1"><select className={`w-full border-slate-300 rounded text-xs p-1 print:appearance-none print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.categoria} onChange={(e) => updateItem(item.id, 'categoria', e.target.value)}><option value="">Seleccionar</option>{CATEGORIAS_FARMACO.map(c => <option key={c} value={c}>{c}</option>)}</select></td>
                   <td className="p-1"><input type="text" className={`w-full border-slate-300 rounded text-xs font-medium print:border-none print:bg-transparent ${isSuspended?'line-through text-slate-500 bg-slate-200':''}`} value={item.principio} onChange={(e) => updateItem(item.id, 'principio', e.target.value)} /></td>
                   <td className="p-1"><input type="text" className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} placeholder="Opcional" value={item.marcaComercial || ''} onChange={(e) => updateItem(item.id, 'marcaComercial', e.target.value)} /></td>
                   <td className="p-1"><select className={`w-full border-slate-300 rounded text-xs p-1 print:appearance-none print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.presentacion} onChange={(e) => updateItem(item.id, 'presentacion', e.target.value)}><option value="">-</option>{PRESENTACIONES.map(p => <option key={p} value={p}>{p}</option>)}</select></td>
