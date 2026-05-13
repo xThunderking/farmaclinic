@@ -837,6 +837,10 @@ export default function App() {
       );
 
       if (maxDiasAtb >= NOTIF_ANTIBIOTICO_DIAS) {
+        const seenAtbDays = Number(patient.atbAlertSeenDays || 0);
+        const wasSeenForCurrentOrHigherDays = seenAtbDays >= maxDiasAtb;
+        if (wasSeenForCurrentOrHigherDays) return;
+
         result.push({
           id: `atb-${patient.id}`,
           type: 'antibiotico',
@@ -844,6 +848,7 @@ export default function App() {
           patientName: patient.demographics?.nombre || 'Paciente sin nombre',
           title: 'Antibiotico prolongado',
           message: `El paciente acumula ${maxDiasAtb} dias con antibiotico activo.`,
+          atbDays: maxDiasAtb,
           severity: 'critical',
           sortValue: maxDiasAtb,
         });
@@ -866,6 +871,17 @@ export default function App() {
 
   const handleNotificationMarkReviewed = (notification) => {
     if (!notification?.patientId) return;
+
+    if (notification.type === 'antibiotico') {
+      const atbDays = Number(notification.atbDays || 0);
+      setPatients((prev) => prev.map((p) => (
+        p.id === notification.patientId
+          ? { ...p, atbAlertSeenDays: atbDays }
+          : p
+      )));
+      return;
+    }
+
     markPatientReviewed(notification.patientId);
   };
 

@@ -105,12 +105,12 @@ export default function TopBar({
                           >
                             Abrir paciente
                           </button>
-                          {notification.type === 'idle' && (
+                          {(notification.type === 'idle' || notification.type === 'antibiotico') && (
                             <button
                               onClick={() => onNotificationMarkReviewed?.(notification)}
                               className="text-xs font-medium px-2.5 py-1 rounded-md bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors"
                             >
-                              Marcar revision
+                              {notification.type === 'antibiotico' ? 'Marcar como visto' : 'Marcar revision'}
                             </button>
                           )}
                         </div>
