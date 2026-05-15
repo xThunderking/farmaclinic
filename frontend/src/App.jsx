@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { 
   Users, UserPlus, Activity, ClipboardList, 
   Plus, Trash2, AlertTriangle, ShieldAlert, 
@@ -107,9 +107,67 @@ const PREGUNTAS_ENTREVISTA = [
   { id: 'q9', section: 'Descarte', text: '¿Usted usa Inhaladores/aerosoles?' }
 ];
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+const normalizeApiBase = (base = '') => String(base || '').trim().replace(/\/+$/, '');
+
+const getApiBaseCandidates = () => {
+  const envBase = normalizeApiBase(import.meta.env.VITE_API_URL || '');
+
+  if (typeof window === 'undefined') {
+    return [envBase || 'http://localhost:4000'];
+  }
+
+  const host = window.location.hostname;
+  const origin = normalizeApiBase(window.location.origin);
+  const hostPort4000 = host ? `${window.location.protocol}//${host}:4000` : 'http://localhost:4000';
+
+  const candidates = [envBase, hostPort4000, origin, 'http://127.0.0.1:4000', 'http://localhost:4000']
+    .map(normalizeApiBase)
+    .filter(Boolean);
+
+  return Array.from(new Set(candidates));
+};
+
+let resolvedApiBase = '';
+let resolvingApiBasePromise = null;
+
+const probeApiBase = async (base) => {
+  try {
+    const res = await fetch(`${base}/api/health`, { method: 'GET' });
+    return res.ok;
+  } catch {
+    return false;
+  }
+};
+
+const resolveApiBase = async () => {
+  if (resolvedApiBase) return resolvedApiBase;
+  if (resolvingApiBasePromise) return resolvingApiBasePromise;
+
+  resolvingApiBasePromise = (async () => {
+    const candidates = getApiBaseCandidates();
+
+    for (const candidate of candidates) {
+      const ok = await probeApiBase(candidate);
+      if (ok) {
+        resolvedApiBase = candidate;
+        return candidate;
+      }
+    }
+
+    resolvedApiBase = candidates[0] || 'http://localhost:4000';
+    return resolvedApiBase;
+  })();
+
+  try {
+    return await resolvingApiBasePromise;
+  } finally {
+    resolvingApiBasePromise = null;
+  }
+};
 const SESSION_USER_KEY = 'farmaclinic_current_user';
 const CLIENT_ID_KEY = 'farmaclinic_client_id';
+const SYNC_PENDING_PATIENTS_KEY = 'farmaclinic_pending_patient_sync';
+const SYNC_RETRY_MS = 3000;
 const APP_VERSION = 'FARMA 1.3';
 const ADULTO_MAYOR_EDAD = 65;
 const NOTIF_SIN_CAMBIOS_HORAS = 4;
@@ -143,6 +201,27 @@ const safeStorageRemove = (key) => {
   } catch {
     // ignore storage remove errors
   }
+};
+
+const getStoredPendingPatientSync = () => {
+  const raw = safeStorageGet(SYNC_PENDING_PATIENTS_KEY);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+};
+
+const setStoredPendingPatientSync = (pendingById = {}) => {
+  const keys = Object.keys(pendingById || {});
+  if (keys.length === 0) {
+    safeStorageRemove(SYNC_PENDING_PATIENTS_KEY);
+    return;
+  }
+  safeStorageSet(SYNC_PENDING_PATIENTS_KEY, JSON.stringify(pendingById));
 };
 
 const getStoredSessionUser = () => {
@@ -266,7 +345,8 @@ const formatPrintValue = (key, value) => {
 
 const apiFetch = async (path, options = {}) => {
   const clientId = getOrCreateClientId();
-  const res = await fetch(`${API_BASE}${path}`, {
+  const apiBase = await resolveApiBase();
+  const res = await fetch(`${apiBase}${path}`, {
     headers: {
       'Content-Type': 'application/json',
       'x-client-id': clientId,
@@ -403,12 +483,12 @@ const getPatientSyncPlan = (prevPatients = [], nextPatients = []) => {
   const nextById = new Map((nextPatients || []).map((p) => [p.id, p]));
 
   if (prevById.size !== nextById.size) {
-    return { mode: 'bulk', changedPatient: null };
+    return { mode: 'bulk', changedPatient: null, changedPatients: [...nextById.values()] };
   }
 
   for (const id of prevById.keys()) {
     if (!nextById.has(id)) {
-      return { mode: 'bulk', changedPatient: null };
+      return { mode: 'bulk', changedPatient: null, changedPatients: [...nextById.values()] };
     }
   }
 
@@ -418,14 +498,14 @@ const getPatientSyncPlan = (prevPatients = [], nextPatients = []) => {
   }
 
   if (changedPatients.length === 0) {
-    return { mode: 'none', changedPatient: null };
+    return { mode: 'none', changedPatient: null, changedPatients: [] };
   }
 
   if (changedPatients.length === 1) {
-    return { mode: 'single', changedPatient: changedPatients[0] };
+    return { mode: 'single', changedPatient: changedPatients[0], changedPatients };
   }
 
-  return { mode: 'bulk', changedPatient: null };
+  return { mode: 'bulk', changedPatient: null, changedPatients };
 };
 
 // --- Estados Iniciales Mock ---
@@ -458,7 +538,59 @@ export default function App() {
   const skipNextPatientsSyncRef = useRef(false);
   const remoteRefreshTimerRef = useRef(null);
   const previousPatientsRef = useRef(initialPatients);
+  const latestPatientsRef = useRef(initialPatients);
+  const pendingPatientSyncRef = useRef(getStoredPendingPatientSync());
   const [notificationNow, setNotificationNow] = useState(Date.now());
+
+  const queuePendingPatientSync = useCallback((patient) => {
+    if (!patient?.id) return;
+    pendingPatientSyncRef.current = {
+      ...(pendingPatientSyncRef.current || {}),
+      [patient.id]: patient,
+    };
+    setStoredPendingPatientSync(pendingPatientSyncRef.current);
+  }, []);
+
+  const clearPendingPatientSync = useCallback((patientId) => {
+    if (!patientId) return;
+    if (!pendingPatientSyncRef.current?.[patientId]) return;
+    const nextPending = { ...(pendingPatientSyncRef.current || {}) };
+    delete nextPending[patientId];
+    pendingPatientSyncRef.current = nextPending;
+    setStoredPendingPatientSync(nextPending);
+  }, []);
+
+  const syncPatientNow = useCallback(async (patient, options = {}) => {
+    if (!patient?.id) return true;
+
+    queuePendingPatientSync(patient);
+    try {
+      await apiFetch('/api/sync/patient', {
+        method: 'PUT',
+        body: JSON.stringify({ patient }),
+        keepalive: options.keepalive === true,
+      });
+      clearPendingPatientSync(patient.id);
+      setSyncError('');
+      return true;
+    } catch {
+      setSyncError('No se pudo sincronizar el paciente en tiempo real.');
+      return false;
+    }
+  }, [clearPendingPatientSync, queuePendingPatientSync]);
+
+  const flushPendingPatientSyncQueue = useCallback(async (options = {}) => {
+    const pendingPatients = Object.values(pendingPatientSyncRef.current || {});
+    if (pendingPatients.length === 0) return;
+
+    for (const patient of pendingPatients) {
+      await syncPatientNow(patient, options);
+    }
+  }, [syncPatientNow]);
+
+  useEffect(() => {
+    latestPatientsRef.current = patients;
+  }, [patients]);
 
   useEffect(() => {
     let mounted = true;
@@ -472,10 +604,17 @@ export default function App() {
         const normalizedPatients = incomingPatients.map((p) =>
           sanitizePatientPresence(p, validUserIds, { dropStale: true, keepMissingTimestamps: true })
         );
+        const pendingById = pendingPatientSyncRef.current || {};
+        const mergedPatients = normalizedPatients.map((p) => pendingById[p.id] || p);
+        Object.keys(pendingById).forEach((pid) => {
+          if (!mergedPatients.some((p) => p.id === pid)) {
+            mergedPatients.push(pendingById[pid]);
+          }
+        });
 
         setUsers(incomingUsers);
-        previousPatientsRef.current = normalizedPatients;
-        setPatients(normalizedPatients);
+        previousPatientsRef.current = mergedPatients;
+        setPatients(mergedPatients);
         setSyncError('');
         loadedFromDbRef.current = true;
       } catch (_err) {
@@ -536,12 +675,19 @@ export default function App() {
         const normalizedPatients = incomingPatients.map((p) =>
           sanitizePatientPresence(p, validUserIds, { dropStale: true, keepMissingTimestamps: true })
         );
+        const pendingById = pendingPatientSyncRef.current || {};
+        const mergedPatients = normalizedPatients.map((p) => pendingById[p.id] || p);
+        Object.keys(pendingById).forEach((pid) => {
+          if (!mergedPatients.some((p) => p.id === pid)) {
+            mergedPatients.push(pendingById[pid]);
+          }
+        });
 
         skipNextUsersSyncRef.current = true;
         skipNextPatientsSyncRef.current = true;
         setUsers(incomingUsers);
-        previousPatientsRef.current = normalizedPatients;
-        setPatients(normalizedPatients);
+        previousPatientsRef.current = mergedPatients;
+        setPatients(mergedPatients);
         setSyncError('');
       } catch (_err) {
         // ignore transient refresh errors; connection will retry
@@ -555,13 +701,21 @@ export default function App() {
 
     const connect = () => {
       const clientId = encodeURIComponent(getOrCreateClientId());
-      eventSource = new EventSource(`${API_BASE}/api/events?clientId=${clientId}`);
-      eventSource.addEventListener('users-updated', scheduleRefresh);
-      eventSource.addEventListener('patients-updated', scheduleRefresh);
-      eventSource.onerror = () => {
-        if (eventSource) eventSource.close();
-        if (!disposed) reconnectTimer = setTimeout(connect, 2000);
-      };
+
+      resolveApiBase()
+        .then((apiBase) => {
+          if (disposed) return;
+          eventSource = new EventSource(`${apiBase}/api/events?clientId=${clientId}`);
+          eventSource.addEventListener('users-updated', scheduleRefresh);
+          eventSource.addEventListener('patients-updated', scheduleRefresh);
+          eventSource.onerror = () => {
+            if (eventSource) eventSource.close();
+            if (!disposed) reconnectTimer = setTimeout(connect, 2000);
+          };
+        })
+        .catch(() => {
+          if (!disposed) reconnectTimer = setTimeout(connect, 2000);
+        });
     };
 
     connect();
@@ -604,12 +758,7 @@ export default function App() {
     if (patientsSyncTimerRef.current) clearTimeout(patientsSyncTimerRef.current);
     patientsSyncTimerRef.current = setTimeout(() => {
       if (syncPlan.mode === 'single' && syncPlan.changedPatient?.id) {
-        apiFetch('/api/sync/patient', {
-          method: 'PUT',
-          body: JSON.stringify({ patient: syncPlan.changedPatient }),
-        })
-          .then(() => setSyncError(''))
-          .catch(() => setSyncError('No se pudo sincronizar el paciente en tiempo real.'));
+        void syncPatientNow(syncPlan.changedPatient);
         return;
       }
 
@@ -617,14 +766,43 @@ export default function App() {
         method: 'PUT',
         body: JSON.stringify({ patients }),
       })
-        .then(() => setSyncError(''))
-        .catch(() => setSyncError('No se pudo sincronizar pacientes con BD.'));
+        .then(() => {
+          setSyncError('');
+          pendingPatientSyncRef.current = {};
+          setStoredPendingPatientSync({});
+        })
+        .catch(() => {
+          (syncPlan.changedPatients || []).forEach((p) => queuePendingPatientSync(p));
+          setSyncError('No se pudo sincronizar pacientes con BD.');
+        });
     }, syncPlan.mode === 'single' ? 120 : 260);
 
     return () => {
       if (patientsSyncTimerRef.current) clearTimeout(patientsSyncTimerRef.current);
     };
-  }, [patients]);
+  }, [patients, queuePendingPatientSync, syncPatientNow]);
+
+  useEffect(() => {
+    if (bootstrapping) return;
+
+    const retryPendingSync = () => {
+      if (Object.keys(pendingPatientSyncRef.current || {}).length === 0) return;
+      void flushPendingPatientSyncQueue();
+    };
+
+    retryPendingSync();
+    const timer = setInterval(retryPendingSync, SYNC_RETRY_MS);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', retryPendingSync);
+    }
+
+    return () => {
+      clearInterval(timer);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', retryPendingSync);
+      }
+    };
+  }, [bootstrapping, flushPendingPatientSyncQueue]);
 
   useEffect(() => {
     if (!currentUser?.id || !activePatientId) return;
@@ -695,6 +873,17 @@ export default function App() {
     if (typeof window === 'undefined') return;
 
     const releasePresence = () => {
+      if (patientsSyncTimerRef.current) {
+        clearTimeout(patientsSyncTimerRef.current);
+        patientsSyncTimerRef.current = null;
+      }
+
+      const activePatient = (latestPatientsRef.current || []).find((p) => p.id === activePatientId);
+      if (activePatient) {
+        void syncPatientNow(activePatient, { keepalive: true });
+      }
+      void flushPendingPatientSyncQueue({ keepalive: true });
+
       if (!activePatientId || !currentUser?.id) return;
 
       setPatients((prev) => {
@@ -709,14 +898,22 @@ export default function App() {
       });
     };
 
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        releasePresence();
+      }
+    };
+
     window.addEventListener('pagehide', releasePresence);
     window.addEventListener('beforeunload', releasePresence);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('pagehide', releasePresence);
       window.removeEventListener('beforeunload', releasePresence);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [activePatientId, currentUser?.id]);
+  }, [activePatientId, currentUser?.id, flushPendingPatientSyncQueue, syncPatientNow]);
 
   useEffect(() => {
     if (!isPatientSidebarOpen) return;
@@ -1415,6 +1612,7 @@ function PrintPatientReport({ patient }) {
           { key: 'principio', label: 'Principio activo' },
           { key: 'marcaComercial', label: 'Marca comercial' },
           { key: 'dosis', label: 'Dosis' },
+          { key: 'frecuencia', label: 'Frecuencia' },
           { key: 'via', label: 'Vía' },
           { key: 'desdeCuando', label: 'Desde cuándo' },
           { key: 'activo', label: 'Estado' },
@@ -1925,6 +2123,7 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
 
   // Métricas de Pacientes
   const activeCount = patients.filter(p => !p.deleted && !p.demographics.egreso).length;
+  const dischargedCount = patients.filter(p => !p.deleted && p.demographics.egreso).length;
   const atbCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.perfilFarmaco.some(f => f.categoria === 'Antibiótico' && f.estado === 'Activo')).length;
   const altoRiesgoCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.perfilFarmaco.some(f => f.categoria === 'Alto Riesgo' && f.estado === 'Activo')).length;
 
@@ -2097,7 +2296,10 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 mb-8">
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-blue-500">
                 <div className="bg-blue-50 p-3 rounded-lg mr-4"><Users className="w-8 h-8 text-blue-600" /></div>
-                <div><p className="text-sm font-medium text-slate-500">Total Pacientes Activos</p><p className="text-3xl font-black text-slate-800">{activeCount}</p></div>
+                <div>
+                  <p className="text-sm font-medium text-slate-500">{view === 'egresados' ? 'Total Pacientes Egresados' : 'Total Pacientes Activos'}</p>
+                  <p className="text-3xl font-black text-slate-800">{view === 'egresados' ? dischargedCount : activeCount}</p>
+                </div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-orange-500">
                 <div className="bg-orange-50 p-3 rounded-lg mr-4"><Activity className="w-8 h-8 text-orange-600" /></div>
@@ -2299,6 +2501,12 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
 
             <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-wrap gap-2 items-center">
                <span className="text-sm font-bold text-slate-500 mr-2"><Filter className="w-4 h-4 inline mr-1"/> Filtros PRM:</span>
+
+               <div className="flex space-x-1 bg-slate-100 p-1 rounded-lg mr-2">
+                 <button onClick={() => setView('activos')} className={`px-4 py-1.5 rounded-md text-xs font-medium transition-colors ${view === 'activos' ? 'bg-white text-orange-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Activos</button>
+                 <button onClick={() => setView('egresados')} className={`px-4 py-1.5 rounded-md text-xs font-medium transition-colors ${view === 'egresados' ? 'bg-white text-orange-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Egresados</button>
+               </div>
+
                <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)} className="py-2 px-3 border border-slate-300 rounded-lg text-sm shadow-sm text-slate-700">
                  <option value="">Mes (Todos)</option>{MESES.map(m => <option key={m.val} value={m.val}>{m.label}</option>)}
                </select>
@@ -2391,6 +2599,12 @@ function Dashboard({ patients, onSelect, onCreate, onDelete, onRestore, onHardDe
 
             <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-wrap gap-2 items-center">
                <span className="text-sm font-bold text-slate-500 mr-2"><Filter className="w-4 h-4 inline mr-1"/> Filtros PROA:</span>
+
+               <div className="flex space-x-1 bg-slate-100 p-1 rounded-lg mr-2">
+                 <button onClick={() => setView('activos')} className={`px-4 py-1.5 rounded-md text-xs font-medium transition-colors ${view === 'activos' ? 'bg-white text-purple-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Activos</button>
+                 <button onClick={() => setView('egresados')} className={`px-4 py-1.5 rounded-md text-xs font-medium transition-colors ${view === 'egresados' ? 'bg-white text-purple-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Egresados</button>
+               </div>
+
                <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)} className="py-2 px-3 border border-slate-300 rounded-lg text-sm shadow-sm text-slate-700">
                  <option value="">Mes (Todos)</option>{MESES.map(m => <option key={m.val} value={m.val}>{m.label}</option>)}
                </select>
@@ -2887,6 +3101,7 @@ function ConciliationTab({ patient, updatePatient }) {
       principio: '',
       marcaComercial: '',
       dosis: '',
+      frecuencia: '',
       via: '',
       desdeCuando: '',
       ultimaTomaMedicamento: '',
@@ -3060,7 +3275,7 @@ function ConciliationTab({ patient, updatePatient }) {
 
 function ConciliationTable({ items, type, onUpdate, onRemove }) {
   const isIngreso = type === 'ingreso';
-  const emptyColSpan = isIngreso ? 9 : 8;
+  const emptyColSpan = isIngreso ? 9 : 9;
 
   return (
     <div className="overflow-x-auto overscroll-x-contain print:overflow-visible">
@@ -3069,7 +3284,8 @@ function ConciliationTable({ items, type, onUpdate, onRemove }) {
           <tr>
             <th className="p-2 text-left font-semibold">Principio Activo</th>
             {isIngreso && <th className="p-2 text-left font-semibold w-24">Marca Com.</th>}
-            <th className="p-2 text-left font-semibold w-24">Dosis/Frec.</th>
+            <th className="p-2 text-left font-semibold w-24">Dosis</th>
+            {!isIngreso && <th className="p-2 text-left font-semibold w-24">Frecuencia</th>}
             <th className="p-2 text-left font-semibold w-20">Vía</th>
             {isIngreso && <th className="p-2 text-left font-semibold w-32">Desde Cuándo</th>}
             {isIngreso && <th className="p-2 text-left font-semibold w-36">Última toma medicamento</th>}
@@ -3089,6 +3305,7 @@ function ConciliationTable({ items, type, onUpdate, onRemove }) {
               {isIngreso && <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" placeholder="Opcional" value={item.marcaComercial || ''} onChange={(e) => onUpdate(type, item.id, 'marcaComercial', e.target.value)} /></td>}
               
               <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" value={item.dosis} onChange={(e) => onUpdate(type, item.id, 'dosis', e.target.value)} /></td>
+              {!isIngreso && <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" value={item.frecuencia || ''} onChange={(e) => onUpdate(type, item.id, 'frecuencia', e.target.value)} /></td>}
               <td className="p-1"><select className="w-full border-slate-300 rounded text-sm p-1 print:appearance-none print:border-none print:bg-transparent" value={item.via} onChange={(e) => onUpdate(type, item.id, 'via', e.target.value)}><option value="">-</option>{VIAS.map(v => <option key={v} value={v}>{v}</option>)}</select></td>
               
               {isIngreso && <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" placeholder="Ej. 2 meses" value={item.desdeCuando || ''} onChange={(e) => onUpdate(type, item.id, 'desdeCuando', e.target.value)} /></td>}

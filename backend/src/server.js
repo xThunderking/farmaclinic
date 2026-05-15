@@ -15,7 +15,7 @@ dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
-const HOST = process.env.BIND_HOST || '127.0.0.1';
+const HOST = process.env.BIND_HOST || '0.0.0.0';
 const sseClients = new Map();
 
 function sendSseEvent(res, event, payload) {
