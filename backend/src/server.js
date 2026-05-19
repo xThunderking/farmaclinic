@@ -9,6 +9,8 @@ const {
   replacePatients,
   upsertPatient,
   listUsers,
+  acquirePatientEditLock,
+  releasePatientEditLock,
 } = require('./db');
 
 dotenv.config();
@@ -151,6 +153,45 @@ app.put('/api/sync/patient', async (req, res) => {
     res.json({ ok: true, id: patient.id });
   } catch (error) {
     res.status(500).json({ error: 'No se pudo sincronizar el paciente.' });
+  }
+});
+
+app.post('/api/patient-lock/acquire', async (req, res) => {
+  const { patientId, userId } = req.body || {};
+  if (!patientId || !userId) {
+    return res.status(400).json({ error: 'patientId y userId son obligatorios.' });
+  }
+
+  try {
+    const result = await acquirePatientEditLock(String(patientId), String(userId));
+    if (result.ok) {
+      return res.json({ ok: true, patientId: String(patientId), lockedByUserId: String(userId), lockedByUserName: null });
+    }
+
+    const users = await listUsers();
+    const owner = users.find((u) => u.id === result.lockedByUserId);
+    return res.json({
+      ok: false,
+      patientId: String(patientId),
+      lockedByUserId: result.lockedByUserId || null,
+      lockedByUserName: owner?.nombre || null,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: 'No se pudo validar bloqueo de edición.' });
+  }
+});
+
+app.post('/api/patient-lock/release', async (req, res) => {
+  const { patientId, userId } = req.body || {};
+  if (!patientId || !userId) {
+    return res.status(400).json({ error: 'patientId y userId son obligatorios.' });
+  }
+
+  try {
+    const result = await releasePatientEditLock(String(patientId), String(userId));
+    return res.json({ ok: true, patientId: String(patientId), released: Boolean(result.released) });
+  } catch (error) {
+    return res.status(500).json({ error: 'No se pudo liberar bloqueo de edición.' });
   }
 });
 

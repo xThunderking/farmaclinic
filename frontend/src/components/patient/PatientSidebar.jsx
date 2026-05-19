@@ -1,6 +1,7 @@
 import {
   Activity,
   ClipboardList,
+  Save,
   FileSpreadsheet,
   FileWarning,
   Layers,
@@ -41,6 +42,9 @@ export default function PatientSidebar({
   onCreateReingreso,
   onSelectEpisode,
   onDeleteEpisode,
+  onSaveChanges,
+  saveDisabled = false,
+  saveLoading = false,
   onExportCsv,
   onPrint,
   formatDate,
@@ -206,6 +210,18 @@ export default function PatientSidebar({
       </nav>
 
       <div className="mt-auto shrink-0 p-4 border-t border-slate-200 space-y-2 bg-slate-50">
+        <button
+          onClick={onSaveChanges}
+          disabled={saveDisabled}
+          className={`w-full flex items-center justify-center px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+            saveDisabled
+              ? 'bg-blue-100 text-blue-400 border border-blue-200 cursor-not-allowed'
+              : 'bg-blue-600 text-white border border-blue-700 hover:bg-blue-700'
+          }`}
+          title="Guardar cambios del paciente"
+        >
+          <Save className="w-4 h-4 mr-2" /> {saveLoading ? 'Guardando...' : 'Guardar cambios'}
+        </button>
         <button
           onClick={onExportCsv}
           className="w-full flex items-center justify-center px-3 py-2 bg-green-50 text-green-700 border border-green-200 rounded-md text-sm font-medium hover:bg-green-100 transition-colors"

@@ -12,6 +12,7 @@ const DB_CONFIG = {
 };
 
 const DB_NAME = process.env.DB_NAME || 'farmaclinic';
+const EDIT_LOCK_TTL_MS = Number(process.env.EDIT_LOCK_TTL_MS || 900000);
 
 let pool;
 
@@ -40,6 +41,16 @@ async function applySchema() {
   const db = await initPool();
   const schema = fs.readFileSync(SQL_PATH, 'utf8');
   await db.query(schema);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS episodio_edit_locks (
+      patient_id VARCHAR(100) NOT NULL,
+      user_id VARCHAR(100) NOT NULL,
+      updated_at BIGINT NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (patient_id),
+      KEY idx_episodio_edit_locks_user (user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
 }
 
 async function seedUsersIfEmpty() {
@@ -372,6 +383,69 @@ async function bootstrap() {
   };
 }
 
+async function acquirePatientEditLock(patientId, userId) {
+  if (!patientId || !userId) {
+    throw new Error('patientId y userId son obligatorios.');
+  }
+
+  const db = await initPool();
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [rows] = await conn.execute(
+      'SELECT patient_id, user_id, updated_at FROM episodio_edit_locks WHERE patient_id = ? FOR UPDATE',
+      [patientId]
+    );
+
+    const now = Date.now();
+    const current = rows?.[0] || null;
+
+    if (!current) {
+      await conn.execute(
+        'INSERT INTO episodio_edit_locks (patient_id, user_id, updated_at) VALUES (?, ?, ?)',
+        [patientId, userId, now]
+      );
+      await conn.commit();
+      return { ok: true, lockedByUserId: userId };
+    }
+
+    const lockOwner = current.user_id;
+    const lockUpdatedAt = Number(current.updated_at || 0);
+    const expired = !Number.isFinite(lockUpdatedAt) || lockUpdatedAt <= 0 || (now - lockUpdatedAt) > EDIT_LOCK_TTL_MS;
+
+    if (lockOwner === userId || expired) {
+      await conn.execute(
+        'UPDATE episodio_edit_locks SET user_id = ?, updated_at = ? WHERE patient_id = ?',
+        [userId, now, patientId]
+      );
+      await conn.commit();
+      return { ok: true, lockedByUserId: userId };
+    }
+
+    await conn.commit();
+    return { ok: false, lockedByUserId: lockOwner };
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
+async function releasePatientEditLock(patientId, userId) {
+  if (!patientId || !userId) {
+    throw new Error('patientId y userId son obligatorios.');
+  }
+
+  const db = await initPool();
+  const [result] = await db.execute(
+    'DELETE FROM episodio_edit_locks WHERE patient_id = ? AND user_id = ?',
+    [patientId, userId]
+  );
+  return { ok: true, released: Number(result?.affectedRows || 0) > 0 };
+}
+
 module.exports = {
   initPool,
   applySchema,
@@ -382,4 +456,6 @@ module.exports = {
   replacePatients,
   upsertPatient,
   bootstrap,
+  acquirePatientEditLock,
+  releasePatientEditLock,
 };

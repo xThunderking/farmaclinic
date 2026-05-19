@@ -167,6 +167,7 @@ const resolveApiBase = async () => {
 const SESSION_USER_KEY = 'farmaclinic_current_user';
 const CLIENT_ID_KEY = 'farmaclinic_client_id';
 const SYNC_PENDING_PATIENTS_KEY = 'farmaclinic_pending_patient_sync';
+const UNSAVED_CHANGES_BEFOREUNLOAD_MSG = 'Hay cambios pendientes. Si recargas la pagina, se perderan los datos no guardados.';
 const SYNC_RETRY_MS = 3000;
 const APP_VERSION = 'FARMA 1.3';
 const ADULTO_MAYOR_EDAD = 65;
@@ -532,15 +533,62 @@ export default function App() {
   const [isPatientSidebarOpen, setIsPatientSidebarOpen] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
   const [syncError, setSyncError] = useState('');
+  const [draftPatient, setDraftPatient] = useState(null);
+  const [draftDirty, setDraftDirty] = useState(false);
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
+  const [lockModal, setLockModal] = useState({ open: false, title: '', message: '', variant: 'lock' });
+  const [confirmModal, setConfirmModal] = useState({
+    open: false,
+    title: '',
+    message: '',
+    confirmText: 'Confirmar',
+    cancelText: 'Cancelar',
+  });
   const loadedFromDbRef = useRef(false);
   const patientsSyncTimerRef = useRef(null);
   const skipNextUsersSyncRef = useRef(false);
   const skipNextPatientsSyncRef = useRef(false);
   const remoteRefreshTimerRef = useRef(null);
+  const enteringPatientRef = useRef(false);
   const previousPatientsRef = useRef(initialPatients);
   const latestPatientsRef = useRef(initialPatients);
   const pendingPatientSyncRef = useRef(getStoredPendingPatientSync());
+  const confirmResolverRef = useRef(null);
+  const allowImmediateReloadRef = useRef(false);
   const [notificationNow, setNotificationNow] = useState(Date.now());
+
+  const openLockModal = useCallback((title, message, variant = 'lock') => {
+    setLockModal({ open: true, title, message, variant });
+  }, []);
+
+  const closeLockModal = useCallback(() => {
+    setLockModal({ open: false, title: '', message: '', variant: 'lock' });
+  }, []);
+
+  const requestConfirmationModal = useCallback((options = {}) => new Promise((resolve) => {
+    confirmResolverRef.current = resolve;
+    setConfirmModal({
+      open: true,
+      title: options.title || 'Confirmar acción',
+      message: options.message || '¿Deseas continuar?',
+      confirmText: options.confirmText || 'Confirmar',
+      cancelText: options.cancelText || 'Cancelar',
+    });
+  }), []);
+
+  const resolveConfirmationModal = useCallback((accepted) => {
+    setConfirmModal({
+      open: false,
+      title: '',
+      message: '',
+      confirmText: 'Confirmar',
+      cancelText: 'Cancelar',
+    });
+
+    const resolver = confirmResolverRef.current;
+    confirmResolverRef.current = null;
+    if (resolver) resolver(accepted);
+  }, []);
 
   const queuePendingPatientSync = useCallback((patient) => {
     if (!patient?.id) return;
@@ -587,6 +635,36 @@ export default function App() {
       await syncPatientNow(patient, options);
     }
   }, [syncPatientNow]);
+
+  const acquirePatientLock = useCallback(async (patientId) => {
+    if (!patientId || !currentUser?.id) {
+      return { ok: false, lockedByUserName: null };
+    }
+
+    try {
+      const payload = await apiFetch('/api/patient-lock/acquire', {
+        method: 'POST',
+        body: JSON.stringify({ patientId, userId: currentUser.id }),
+      });
+      return payload;
+    } catch {
+      return { ok: false, lockedByUserName: null, lockCheckError: true };
+    }
+  }, [currentUser?.id]);
+
+  const releasePatientLock = useCallback(async (patientId, options = {}) => {
+    if (!patientId || !currentUser?.id) return;
+
+    try {
+      await apiFetch('/api/patient-lock/release', {
+        method: 'POST',
+        body: JSON.stringify({ patientId, userId: currentUser.id }),
+        keepalive: options.keepalive === true,
+      });
+    } catch {
+      // ignore release errors (lock expires automatically by TTL)
+    }
+  }, [currentUser?.id]);
 
   useEffect(() => {
     latestPatientsRef.current = patients;
@@ -805,6 +883,28 @@ export default function App() {
   }, [bootstrapping, flushPendingPatientSyncQueue]);
 
   useEffect(() => {
+    if (!activePatientId || !currentUser?.id) return;
+
+    const renewLock = async () => {
+      const result = await acquirePatientLock(activePatientId);
+      if (result?.ok) return;
+
+      if (result?.lockedByUserName) {
+        setSyncError(`Bloqueo de edición ocupado por ${result.lockedByUserName}.`);
+      }
+    };
+
+    void renewLock();
+    const timer = setInterval(() => {
+      void renewLock();
+    }, 30000);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [activePatientId, currentUser?.id, acquirePatientLock]);
+
+  useEffect(() => {
     if (!currentUser?.id || !activePatientId) return;
 
     const touchPresence = () => {
@@ -886,6 +986,8 @@ export default function App() {
 
       if (!activePatientId || !currentUser?.id) return;
 
+      void releasePatientLock(activePatientId, { keepalive: true });
+
       setPatients((prev) => {
         let changed = false;
         const next = prev.map((patient) => {
@@ -898,22 +1000,14 @@ export default function App() {
       });
     };
 
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        releasePresence();
-      }
-    };
-
     window.addEventListener('pagehide', releasePresence);
     window.addEventListener('beforeunload', releasePresence);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('pagehide', releasePresence);
       window.removeEventListener('beforeunload', releasePresence);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [activePatientId, currentUser?.id, flushPendingPatientSyncQueue, syncPatientNow]);
+  }, [activePatientId, currentUser?.id, flushPendingPatientSyncQueue, syncPatientNow, releasePatientLock]);
 
   useEffect(() => {
     if (!isPatientSidebarOpen) return;
@@ -931,44 +1025,93 @@ export default function App() {
   }, [isPatientSidebarOpen]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleBeforeUnload = (event) => {
+      if (allowImmediateReloadRef.current) return;
+      if (!draftDirty) return;
+      event.preventDefault();
+      event.returnValue = UNSAVED_CHANGES_BEFOREUNLOAD_MSG;
+      return UNSAVED_CHANGES_BEFOREUNLOAD_MSG;
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [draftDirty]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleReloadShortcut = (event) => {
+      const key = String(event.key || '').toLowerCase();
+      const isKeyboardReload = event.key === 'F5' || ((event.ctrlKey || event.metaKey) && key === 'r');
+      if (!isKeyboardReload || !draftDirty) return;
+
+      event.preventDefault();
+
+      void (async () => {
+        const approved = await requestConfirmationModal({
+          title: 'Recargar página',
+          message: 'Hay cambios pendientes sin guardar. Si recargas ahora, esos cambios se perderán.',
+          confirmText: 'Recargar de todos modos',
+          cancelText: 'Cancelar',
+        });
+
+        if (!approved) return;
+        allowImmediateReloadRef.current = true;
+        window.location.reload();
+      })();
+    };
+
+    window.addEventListener('keydown', handleReloadShortcut);
+    return () => {
+      window.removeEventListener('keydown', handleReloadShortcut);
+    };
+  }, [draftDirty, requestConfirmationModal]);
+
+  useEffect(() => {
     const timer = setInterval(() => setNotificationNow(Date.now()), NOTIF_REFRESH_MS);
     return () => clearInterval(timer);
   }, []);
 
-  // --- LÓGICA DE PRESENCIA COLABORATIVA Y NAVEGACIÓN ---
-  const handleEnterPatient = (id, targetTab = 'demographics') => {
-    const p = patients.find(x => x.id === id);
-    if (!p || !currentUser?.id) return;
+  useEffect(() => {
+    if (!activePatientId) {
+      setDraftPatient(null);
+      setDraftDirty(false);
+      setIsSavingDraft(false);
+      return;
+    }
 
-    const now = Date.now();
-    setPatients((prev) => {
-      let changed = false;
-      const next = prev.map((patient) => {
-        let updated = patient;
+    const source = patients.find((p) => p.id === activePatientId) || null;
+    if (!source) {
+      setDraftPatient(null);
+      setDraftDirty(false);
+      setIsSavingDraft(false);
+      return;
+    }
 
-        if ((patient.activeUsers || []).includes(currentUser.id) && patient.id !== id) {
-          updated = removePresenceFromPatient(updated, currentUser.id);
-        }
+    // Keep the form synced with server state while there are no local unsaved edits.
+    if (!draftDirty || draftPatient?.id !== activePatientId) {
+      setDraftPatient(source);
+    }
+  }, [patients, activePatientId, draftDirty, draftPatient?.id]);
 
-        if (patient.id === id) {
-          updated = touchPresenceInPatient(updated, currentUser.id, now);
-          updated = { ...updated, lastReviewedAt: now };
-        }
-
-        if (updated !== patient) changed = true;
-        return updated;
+  const attemptExitPatient = useCallback(async () => {
+    if (draftDirty) {
+      const confirmDiscard = await requestConfirmationModal({
+        title: 'Cambios sin guardar',
+        message: 'Tienes cambios pendientes. Si sales ahora, se perderán. ¿Deseas salir de todos modos?',
+        confirmText: 'Salir sin guardar',
+        cancelText: 'Seguir editando',
       });
+      if (!confirmDiscard) return false;
+    }
 
-      return changed ? next : prev;
-    });
-
-    setActivePatientId(id);
-    setActiveTab(targetTab);
-    setIsPatientSidebarOpen(false);
-  };
-
-  const handleExitPatient = () => {
     if (activePatientId && currentUser?.id) {
+      void releasePatientLock(activePatientId, { keepalive: true });
+
       setPatients((prev) => {
         let changed = false;
         const next = prev.map((patient) => {
@@ -981,12 +1124,103 @@ export default function App() {
       });
     }
 
+    setDraftPatient(null);
+    setDraftDirty(false);
+    setIsSavingDraft(false);
     setActivePatientId(null);
     setIsPatientSidebarOpen(false);
+    return true;
+  }, [
+    draftDirty,
+    requestConfirmationModal,
+    currentUser?.id,
+    releasePatientLock,
+  ]);
+  // --- LÓGICA DE PRESENCIA COLABORATIVA Y NAVEGACIÓN ---
+  const handleEnterPatient = async (id, targetTab = 'demographics') => {
+    const p = patients.find(x => x.id === id);
+    if (!p || !currentUser?.id) return;
+    if (enteringPatientRef.current) return;
+
+    if (activePatientId === id) {
+      setActiveTab(targetTab);
+      setIsPatientSidebarOpen(false);
+      return;
+    }
+
+    if (activePatientId && activePatientId !== id && draftDirty) {
+      const confirmDiscard = await requestConfirmationModal({
+        title: 'Cambios sin guardar',
+        message: 'Si cambias de paciente ahora, tus cambios actuales se perderán.',
+        confirmText: 'Cambiar paciente',
+        cancelText: 'Seguir editando',
+      });
+      if (!confirmDiscard) return;
+    }
+
+    enteringPatientRef.current = true;
+
+    try {
+      const lockResult = await acquirePatientLock(id);
+      if (!lockResult?.ok) {
+        if (lockResult?.lockCheckError) {
+          openLockModal('No se pudo validar bloqueo', 'No fue posible validar el bloqueo de edición con el servidor. Intenta de nuevo en unos segundos.', 'error');
+          return;
+        }
+
+        const blockingName = lockResult?.lockedByUserName || 'otro usuario';
+        openLockModal('Paciente en edición', `Este paciente está siendo editado por ${blockingName}. Podrás entrar cuando salga al Dashboard.`);
+        return;
+      }
+
+      if (activePatientId && activePatientId !== id) {
+        void releasePatientLock(activePatientId);
+      }
+
+      const now = Date.now();
+      const selectedUpdated = {
+        ...touchPresenceInPatient(p, currentUser.id, now),
+        lastReviewedAt: now,
+      };
+
+      setPatients((prev) => {
+        let changed = false;
+        const next = prev.map((patient) => {
+          let updated = patient;
+
+          if ((patient.activeUsers || []).includes(currentUser.id) && patient.id !== id) {
+            updated = removePresenceFromPatient(updated, currentUser.id);
+          }
+
+          if (patient.id === id) {
+            updated = selectedUpdated;
+          }
+
+          if (updated !== patient) changed = true;
+          return updated;
+        });
+
+        return changed ? next : prev;
+      });
+
+      setDraftPatient(selectedUpdated);
+      setDraftDirty(false);
+      setIsSavingDraft(false);
+      setActivePatientId(id);
+      setActiveTab(targetTab);
+      setIsPatientSidebarOpen(false);
+    } finally {
+      enteringPatientRef.current = false;
+    }
   };
 
-  const handleLogoutWithUnlock = () => {
-    handleExitPatient(); 
+  const handleExitPatient = () => {
+    void attemptExitPatient();
+  };
+
+  const handleLogoutWithUnlock = async () => {
+    const canLogout = await attemptExitPatient();
+    if (!canLogout) return;
     setCurrentUser(null);
   };
 
@@ -1099,10 +1333,50 @@ export default function App() {
 
   // --- APP PRINCIPAL ---
   const activePatient = patients.find(p => p.id === activePatientId) || null;
+  const activePatientForEditing = draftPatient?.id === activePatientId ? draftPatient : activePatient;
+  const otherActiveUserIds = activePatient ? listOtherActiveUsers(activePatient, currentUser.id) : [];
+  const otherActiveNames = otherActiveUserIds.map(uid => users.find(u => u.id === uid)?.nombre).join(', ');
+  const lockedByOtherUser = otherActiveUserIds.length > 0;
 
   const updatePatient = (updatedData) => {
+    if (!activePatientId || !activePatientForEditing) return;
+    if (lockedByOtherUser) {
+      setSyncError(`Edición bloqueada por: ${otherActiveNames || 'otro usuario'}.`);
+      return;
+    }
+
     const now = Date.now();
-    setPatients(prev => prev.map(p => p.id === activePatientId ? { ...p, ...updatedData, lastChangedAt: now } : p));
+    setDraftPatient((prev) => {
+      if (!prev || prev.id !== activePatientId) return prev;
+      return { ...prev, ...updatedData, lastChangedAt: now };
+    });
+    setDraftDirty(true);
+  };
+
+  const handleSavePatientChanges = async () => {
+    if (!activePatientForEditing?.id) return;
+    if (!draftDirty) return;
+
+    const lockResult = await acquirePatientLock(activePatientForEditing.id);
+    if (!lockResult?.ok) {
+      const blockingName = lockResult?.lockedByUserName || 'otro usuario';
+      openLockModal('No se puede guardar', `No se puede guardar porque ${blockingName} está editando este paciente.`);
+      return;
+    }
+
+    const patientToSave = { ...activePatientForEditing, lastChangedAt: Date.now() };
+    setIsSavingDraft(true);
+    setDraftPatient(patientToSave);
+
+    skipNextPatientsSyncRef.current = true;
+    setPatients((prev) => prev.map((p) => (p.id === patientToSave.id ? patientToSave : p)));
+
+    const saved = await syncPatientNow(patientToSave);
+    if (saved) {
+      setDraftDirty(false);
+      setSyncError('');
+    }
+    setIsSavingDraft(false);
   };
 
   const createNewPatientFromModal = (initialData) => {
@@ -1173,24 +1447,99 @@ export default function App() {
     setShowNewPatientModal(false);
   };
 
-  const handleCreateReingreso = () => {
-    if (!activePatient) return;
-    handleExitPatient(); 
-    handleCreateReingresoFromModal(activePatient);
+  const handleCreateReingreso = async () => {
+    if (!activePatientForEditing) return;
+    const canExit = await attemptExitPatient();
+    if (!canExit) return;
+    handleCreateReingresoFromModal(activePatientForEditing);
   };
 
-  const moveToTrash = (id) => { setPatients(prev => prev.map(p => p.id === id ? { ...p, deleted: true } : p)); if (activePatientId === id) handleExitPatient(); };
+  const moveToTrash = async (id) => {
+    if (activePatientId === id) {
+      const canExit = await attemptExitPatient();
+      if (!canExit) return;
+    }
+    setPatients((prev) => prev.map((p) => (p.id === id ? { ...p, deleted: true } : p)));
+  };
   const restorePatient = (id) => setPatients(prev => prev.map(p => p.id === id ? { ...p, deleted: false } : p));
+
+  const lockModalNode = lockModal.open ? (
+    <div className="fixed inset-0 z-[90] bg-slate-900/65 backdrop-blur-[1px] flex items-center justify-center p-4">
+      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+        <div className="px-5 py-4 bg-gradient-to-r from-amber-50 to-rose-50 border-b border-slate-200 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center border border-amber-200">
+            {lockModal.variant === 'error' ? <AlertTriangle className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-slate-800">{lockModal.title || 'Paciente bloqueado'}</h3>
+            <p className="text-xs text-slate-500">Control de edición exclusiva</p>
+          </div>
+        </div>
+
+        <div className="px-5 py-4">
+          <p className="text-sm text-slate-700 leading-relaxed">{lockModal.message || 'Otro usuario está editando este paciente.'}</p>
+        </div>
+
+        <div className="px-5 py-4 bg-slate-50 border-t border-slate-200 flex justify-end">
+          <button
+            onClick={closeLockModal}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-semibold transition-colors"
+          >
+            <CheckCircle className="w-4 h-4" /> Entendido
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  const confirmModalNode = confirmModal.open ? (
+    <div className="fixed inset-0 z-[95] bg-slate-900/70 backdrop-blur-[1px] flex items-center justify-center p-4">
+      <div className="w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+        <div className="px-5 py-4 bg-gradient-to-r from-amber-50 to-orange-50 border-b border-slate-200 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center border border-amber-200">
+            <AlertTriangle className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-slate-800">{confirmModal.title || 'Confirmar acción'}</h3>
+            <p className="text-xs text-slate-500">Revisa antes de continuar</p>
+          </div>
+        </div>
+
+        <div className="px-5 py-4">
+          <p className="text-sm text-slate-700 leading-relaxed">{confirmModal.message || '¿Deseas continuar?'}</p>
+        </div>
+
+        <div className="px-5 py-4 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row gap-2 sm:justify-end">
+          <button
+            onClick={() => resolveConfirmationModal(false)}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 font-medium transition-colors"
+          >
+            <X className="w-4 h-4" /> {confirmModal.cancelText || 'Cancelar'}
+          </button>
+          <button
+            onClick={() => resolveConfirmationModal(true)}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 font-semibold transition-colors"
+          >
+            <AlertTriangle className="w-4 h-4" /> {confirmModal.confirmText || 'Confirmar'}
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
   
   // Eliminación permanente segura 
-  const permanentlyDelete = (id) => { 
+  const permanentlyDelete = async (id) => { 
      const pToDelete = patients.find(p => p.id === id);
      const baseId = pToDelete?.pacienteBaseId || pToDelete?.id;
+
+     if (activePatientId === id) {
+       const canExit = await attemptExitPatient();
+       if (!canExit) return;
+     }
 
      setPatients(prev => prev.filter(p => p.id !== id));
      
      if (activePatientId === id) {
-       handleExitPatient();
        const others = patients.filter(p => p.id !== id && !p.deleted && (p.pacienteBaseId || p.id) === baseId);
        if (others.length > 0) handleEnterPatient(others[0].id);
      }
@@ -1229,15 +1578,19 @@ export default function App() {
               onCreateReingreso={handleCreateReingresoFromModal} 
            />
         )}
+          {lockModalNode}
+          {confirmModalNode}
       </div>
     );
   }
 
-  const { years: edad, group: grupoEtario } = calculateAge(activePatient.demographics.fechaNacimiento);
+  if (!activePatientForEditing) return null;
+
+  const { years: edad, group: grupoEtario } = calculateAge(activePatientForEditing.demographics.fechaNacimiento);
   const handlePrint = () => window.print();
 
   // Buscar historial de episodios para el sidebar
-  const baseId = activePatient.pacienteBaseId || activePatient.id;
+  const baseId = activePatientForEditing.pacienteBaseId || activePatientForEditing.id;
   const episodiosDelPaciente = patients.filter(p => !p.deleted && (p.pacienteBaseId || p.id) === baseId).sort((a,b) => new Date(a.demographics.ingreso) - new Date(b.demographics.ingreso));
   const handleChangeActiveTab = (nextTab) => {
     setActiveTab(nextTab);
@@ -1249,7 +1602,7 @@ export default function App() {
   };
 
   const handleExportPatientCSV = () => {
-    const p = activePatient;
+    const p = activePatientForEditing;
     const rows = [
       ["REPORTE INDIVIDUAL DE PACIENTE", p.demographics.nombre],
       ["ID Interno (FV)", p.demographics.identificadorInterno, "No. Paciente", p.demographics.numeroPaciente, "No. Episodio", p.demographics.numeroEpisodio],
@@ -1298,11 +1651,7 @@ export default function App() {
     exportToCSV(`Paciente_${p.demographics.nombre.replace(/\s+/g, '_')}.csv`, rows);
   };
 
-  const diasEstancia = calculateDaysOfUse(activePatient.demographics.ingreso, activePatient.demographics.egreso);
-
-  // Lógica para detectar presencia de otros usuarios en ESTE perfil específico
-  const otherActiveUserIds = listOtherActiveUsers(activePatient, currentUser.id);
-  const otherActiveNames = otherActiveUserIds.map(uid => users.find(u => u.id === uid)?.nombre).join(', ');
+  const diasEstancia = calculateDaysOfUse(activePatientForEditing.demographics.ingreso, activePatientForEditing.demographics.egreso);
 
   return (
     <div className="h-screen overflow-hidden bg-slate-50 flex flex-col font-sans text-slate-800 print:bg-white print:h-auto print:overflow-visible relative">
@@ -1329,7 +1678,7 @@ export default function App() {
 
         <aside className={`absolute inset-y-0 left-0 z-40 w-[min(22rem,88vw)] transform transition-transform duration-200 ease-out xl:hidden print:hidden ${isPatientSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
           <PatientSidebar
-            activePatient={activePatient}
+            activePatient={activePatientForEditing}
             activeTab={activeTab}
             onTabChange={handleChangeActiveTab}
             edad={edad}
@@ -1340,6 +1689,9 @@ export default function App() {
             onCreateReingreso={handleCreateReingreso}
             onSelectEpisode={handleSelectEpisode}
             onDeleteEpisode={permanentlyDelete}
+            onSaveChanges={handleSavePatientChanges}
+            saveDisabled={lockedByOtherUser || !draftDirty || isSavingDraft}
+            saveLoading={isSavingDraft}
             onExportCsv={handleExportPatientCSV}
             onPrint={handlePrint}
             formatDate={formatExcelDate}
@@ -1352,7 +1704,7 @@ export default function App() {
 
         <div className="hidden xl:flex xl:w-72 xl:shrink-0">
           <PatientSidebar
-            activePatient={activePatient}
+            activePatient={activePatientForEditing}
             activeTab={activeTab}
             onTabChange={setActiveTab}
             edad={edad}
@@ -1363,6 +1715,9 @@ export default function App() {
             onCreateReingreso={handleCreateReingreso}
             onSelectEpisode={handleSelectEpisode}
             onDeleteEpisode={permanentlyDelete}
+            onSaveChanges={handleSavePatientChanges}
+            saveDisabled={lockedByOtherUser || !draftDirty || isSavingDraft}
+            saveLoading={isSavingDraft}
             onExportCsv={handleExportPatientCSV}
             onPrint={handlePrint}
             formatDate={formatExcelDate}
@@ -1375,36 +1730,38 @@ export default function App() {
         <div className="flex-1 min-h-0 overflow-auto p-2 sm:p-4 lg:p-6 xl:p-8 bg-slate-100 print:hidden">
           <div className="max-w-6xl mx-auto bg-white rounded-xl shadow-sm border border-slate-200 p-4 sm:p-6 relative">
             
-            {/* INDICADOR DE EDICIÓN COLABORATIVA EN TIEMPO REAL */}
+            {/* INDICADOR DE BLOQUEO DE EDICIÓN */}
             {otherActiveUserIds.length > 0 ? (
               <div className="relative mb-4 lg:mb-0 lg:absolute lg:top-0 lg:right-0 bg-amber-100 text-amber-800 border border-amber-200 lg:border-l lg:border-b lg:border-t-0 lg:border-r-0 px-4 py-1.5 text-xs font-bold rounded-md lg:rounded-bl-xl lg:rounded-tr-xl flex items-center shadow-sm">
                   <div className="relative flex h-3 w-3 mr-2">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
                   </div>
-                  Editando simultáneamente con: <span className="ml-1 text-amber-900 underline">{otherActiveNames}</span>
+                  Bloqueado: editando <span className="ml-1 text-amber-900 underline">{otherActiveNames}</span>
                </div>
             ) : (
               <div className="relative mb-4 lg:mb-0 lg:absolute lg:top-0 lg:right-0 bg-green-50 text-green-700 border border-green-100 lg:border-l lg:border-b lg:border-t-0 lg:border-r-0 px-3 py-1 text-xs font-bold rounded-md lg:rounded-bl-xl lg:rounded-tr-xl flex items-center">
-                  <CheckCircle className="w-3 h-3 mr-1" /> Solo tú estás editando este expediente.
+                  <CheckCircle className="w-3 h-3 mr-1" /> Edición exclusiva activa.
                </div>
             )}
 
-            {activeTab === 'demographics' && <DemographicsTab patient={activePatient} updatePatient={updatePatient} allPatients={patients} />}
-            {activeTab === 'conciliation' && <ConciliationTab patient={activePatient} updatePatient={updatePatient} />}
-            {activeTab === 'pharmacotherapy' && <PharmacotherapyTab patient={activePatient} updatePatient={updatePatient} />}
-            {activeTab === 'prm' && <PrmTab patient={activePatient} updatePatient={updatePatient} />}
-            {activeTab === 'labs' && <LabsTab patient={activePatient} updatePatient={updatePatient} />}
-            {activeTab === 'micro' && <MicrobiologyTab patient={activePatient} updatePatient={updatePatient} />}
-            {activeTab === 'ram' && <RamTab patient={activePatient} updatePatient={updatePatient} />}
+            {activeTab === 'demographics' && <DemographicsTab patient={activePatientForEditing} updatePatient={updatePatient} allPatients={patients} />}
+            {activeTab === 'conciliation' && <ConciliationTab patient={activePatientForEditing} updatePatient={updatePatient} />}
+            {activeTab === 'pharmacotherapy' && <PharmacotherapyTab patient={activePatientForEditing} updatePatient={updatePatient} />}
+            {activeTab === 'prm' && <PrmTab patient={activePatientForEditing} updatePatient={updatePatient} />}
+            {activeTab === 'labs' && <LabsTab patient={activePatientForEditing} updatePatient={updatePatient} />}
+            {activeTab === 'micro' && <MicrobiologyTab patient={activePatientForEditing} updatePatient={updatePatient} />}
+            {activeTab === 'ram' && <RamTab patient={activePatientForEditing} updatePatient={updatePatient} />}
           </div>
         </div>
 
         {/* --- VISTA DE IMPRESIÓN (solo campos con datos) --- */}
         <div className="hidden print:block">
-          <PrintPatientReport patient={activePatient} />
+          <PrintPatientReport patient={activePatientForEditing} />
         </div>
       </div>
+      {lockModalNode}
+      {confirmModalNode}
     </div>
   );
 }
