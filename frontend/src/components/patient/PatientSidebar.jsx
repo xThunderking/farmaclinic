@@ -65,8 +65,8 @@ export default function PatientSidebar({
               <button
                 onClick={onRequestClose}
                 className="xl:hidden p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100"
-                title="Cerrar menu"
-                aria-label="Cerrar menu lateral"
+                title="Cerrar menú"
+                aria-label="Cerrar menú lateral"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -81,7 +81,7 @@ export default function PatientSidebar({
               Hab: {activePatient.demographics.habitacion || '-'} | Edad: {edad ? `${edad} a. (${grupoEtario})` : '-'}
             </p>
             <p className="font-medium text-slate-700 bg-slate-100 inline-block px-2 py-0.5 rounded">
-              Estancia: {diasEstancia} dias
+              Estancia: {diasEstancia} días
             </p>
           </div>
           {activePatient.demographics.egreso && (
@@ -100,7 +100,7 @@ export default function PatientSidebar({
               <button
                 onClick={onCreateReingreso}
                 className="text-[10px] bg-blue-600 text-white px-2 py-1 rounded font-bold hover:bg-blue-700 transition"
-                title="Crear un nuevo episodio de hospitalizacion para este paciente"
+                title="Crear un nuevo episodio de hospitalización para este paciente"
               >
                 + Reingreso
               </button>
@@ -178,13 +178,13 @@ export default function PatientSidebar({
         />
         <TabButton
           icon={<ClipboardList />}
-          label="Entrevista y Conciliacion"
+          label="Conciliación"
           isActive={activeTab === 'conciliation'}
           onClick={() => onTabChange('conciliation')}
         />
         <TabButton
           icon={<Pill />}
-          label="Perfil Farmacoterapeutico"
+          label="Perfil Farmacoterapéutico"
           isActive={activeTab === 'pharmacotherapy'}
           onClick={() => onTabChange('pharmacotherapy')}
         />
@@ -196,11 +196,11 @@ export default function PatientSidebar({
         />
         <TabButton
           icon={<Activity />}
-          label="Laboratorios (y TFG)"
+          label="Laboratorios"
           isActive={activeTab === 'labs'}
           onClick={() => onTabChange('labs')}
         />
-        <TabButton icon={<Microscope />} label="Microbiologia" isActive={activeTab === 'micro'} onClick={() => onTabChange('micro')} />
+        <TabButton icon={<Microscope />} label="Microbiología" isActive={activeTab === 'micro'} onClick={() => onTabChange('micro')} />
         <TabButton
           icon={<ShieldAlert />}
           label="Reacciones Adversas"
@@ -238,4 +238,3 @@ export default function PatientSidebar({
     </div>
   );
 }
-

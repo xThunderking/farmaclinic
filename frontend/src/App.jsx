@@ -1,13 +1,14 @@
-import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+﻿import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { 
   Users, UserPlus, Activity, ClipboardList, 
   Plus, Trash2, AlertTriangle, ShieldAlert, 
   CheckCircle, FileSpreadsheet, Search, Filter,
-  Microscope, Lock, Settings, ShieldCheck, Bug, FileWarning, FileText, RefreshCcw, Layers, X, PieChart, ListChecks, TestTube, History, CheckSquare, XCircle, Unlock, CircleHelp
+  Microscope, Lock, Settings, ShieldCheck, Bug, FileWarning, FileText, RefreshCcw, Layers, X, PieChart, ListChecks, TestTube, History, CheckSquare, XCircle, Unlock, CircleHelp, Eye
 } from 'lucide-react';
 import AppFooter from './components/layout/AppFooter';
 import TopBar from './components/layout/TopBar';
 import PatientSidebar from './components/patient/PatientSidebar';
+import PrintPatientReport from './components/print/PrintPatientReport';
 
 // --- Constantes y Listas ---
 const PRESENTACIONES = ["Amp", "Fam", "Fco", "Cap", "Tab", "Sup", "Susp", "SL", "Jer Prell", "Pch", "Ovu"];
@@ -320,30 +321,6 @@ const listOtherActiveUsers = (patient, currentUserId) => {
   });
 };
 
-const hasMeaningfulValue = (value) => {
-  if (value === null || value === undefined) return false;
-  if (typeof value === 'string') return value.trim() !== '';
-  if (typeof value === 'number') return !Number.isNaN(value);
-  if (typeof value === 'boolean') return true;
-  if (Array.isArray(value)) return value.some(hasMeaningfulValue);
-  if (typeof value === 'object') return Object.values(value).some(hasMeaningfulValue);
-  return false;
-};
-
-const formatPrintValue = (key, value) => {
-  if (!hasMeaningfulValue(value)) return '';
-  if (typeof value === 'boolean') return value ? 'Sí' : 'No';
-  if (typeof value === 'number') return String(value);
-  if (typeof value !== 'string') return String(value);
-
-  const cleaned = value.trim();
-  const shouldFormatDate = /(fecha|date|ingreso|egreso|inicio|suspension|muestra)/i.test(key || '');
-  if (shouldFormatDate && /^\d{4}-\d{2}-\d{2}/.test(cleaned)) {
-    return formatExcelDate(cleaned);
-  }
-  return cleaned;
-};
-
 const apiFetch = async (path, options = {}) => {
   const clientId = getOrCreateClientId();
   const apiBase = await resolveApiBase();
@@ -543,6 +520,7 @@ export default function App() {
     message: '',
     confirmText: 'Confirmar',
     cancelText: 'Cancelar',
+    extraText: '',
   });
   const loadedFromDbRef = useRef(false);
   const patientsSyncTimerRef = useRef(null);
@@ -573,6 +551,7 @@ export default function App() {
       message: options.message || '¿Deseas continuar?',
       confirmText: options.confirmText || 'Confirmar',
       cancelText: options.cancelText || 'Cancelar',
+      extraText: options.extraText || '',
     });
   }), []);
 
@@ -583,6 +562,7 @@ export default function App() {
       message: '',
       confirmText: 'Confirmar',
       cancelText: 'Cancelar',
+      extraText: '',
     });
 
     const resolver = confirmResolverRef.current;
@@ -1100,13 +1080,44 @@ export default function App() {
 
   const attemptExitPatient = useCallback(async () => {
     if (draftDirty) {
-      const confirmDiscard = await requestConfirmationModal({
+      const exitDecision = await requestConfirmationModal({
         title: 'Cambios sin guardar',
         message: 'Tienes cambios pendientes. Si sales ahora, se perderán. ¿Deseas salir de todos modos?',
         confirmText: 'Salir sin guardar',
         cancelText: 'Seguir editando',
+        extraText: 'Guardar y salir',
       });
-      if (!confirmDiscard) return false;
+
+      if (exitDecision === 'save-exit') {
+        const draftToSave = draftPatient?.id === activePatientId
+          ? draftPatient
+          : (patients.find((p) => p.id === activePatientId) || null);
+
+        if (!draftToSave?.id) return false;
+
+        const lockResult = await acquirePatientLock(draftToSave.id);
+        if (!lockResult?.ok) {
+          const blockingName = lockResult?.lockedByUserName || 'otro usuario';
+          openLockModal('No se puede guardar', `No se puede guardar porque ${blockingName} está editando este paciente.`);
+          return false;
+        }
+
+        const patientToSave = { ...draftToSave, lastChangedAt: Date.now() };
+        setIsSavingDraft(true);
+        setDraftPatient(patientToSave);
+
+        skipNextPatientsSyncRef.current = true;
+        setPatients((prev) => prev.map((p) => (p.id === patientToSave.id ? patientToSave : p)));
+
+        const saved = await syncPatientNow(patientToSave);
+        setIsSavingDraft(false);
+
+        if (!saved) return false;
+        setDraftDirty(false);
+        setSyncError('');
+      } else if (!exitDecision) {
+        return false;
+      }
     }
 
     if (activePatientId && currentUser?.id) {
@@ -1133,6 +1144,12 @@ export default function App() {
   }, [
     draftDirty,
     requestConfirmationModal,
+    draftPatient,
+    activePatientId,
+    patients,
+    acquirePatientLock,
+    openLockModal,
+    syncPatientNow,
     currentUser?.id,
     releasePatientLock,
   ]);
@@ -1277,8 +1294,8 @@ export default function App() {
           type: 'antibiotico',
           patientId: patient.id,
           patientName: patient.demographics?.nombre || 'Paciente sin nombre',
-          title: 'Antibiotico prolongado',
-          message: `El paciente acumula ${maxDiasAtb} dias con antibiotico activo.`,
+          title: 'Antibiótico prolongado',
+          message: `El paciente acumula ${maxDiasAtb} días con antibiótico activo.`,
           atbDays: maxDiasAtb,
           severity: 'critical',
           sortValue: maxDiasAtb,
@@ -1516,6 +1533,14 @@ export default function App() {
           >
             <X className="w-4 h-4" /> {confirmModal.cancelText || 'Cancelar'}
           </button>
+          {confirmModal.extraText ? (
+            <button
+              onClick={() => resolveConfirmationModal('save-exit')}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 font-semibold transition-colors"
+            >
+              <CheckCircle className="w-4 h-4" /> {confirmModal.extraText}
+            </button>
+          ) : null}
           <button
             onClick={() => resolveConfirmationModal(true)}
             className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 font-semibold transition-colors"
@@ -1618,11 +1643,11 @@ export default function App() {
       ["Egreso", p.conciliacion.egresoNA ? "No Aplica" : (p.conciliacion.egreso.length > 0 ? "Realizada" : "Pendiente")],
       [],
       ["PERFIL FARMACOTERAPÉUTICO (Validación Previa 1ra Dosis: " + (p.perfilFarmacoMeta?.evaluadoPrevioPrimeraDosis ? 'SI' : 'NO') + ")"],
-      ["Categoría", "Principio", "Marca Comercial", "Dosis", "Vía", "Frecuencia", "F. Inicio", "Días", "Idoneidad", "Estado", "F. Suspensión"]
+      ["Categoría", "Principio", "Marca Comercial", "Dosis", "Vía", "Frecuencia", "Volumen (mL)", "Tiempo (hr)", "Velocidad (mL/hr)", "F. Inicio", "Días", "Idoneidad", "Estado", "F. Suspensión"]
     ];
     p.perfilFarmaco.forEach(f => {
       const d = calculateDaysOfUse(f.fechaInicio, f.estado === 'Suspendido' ? f.fechaSuspension : p.demographics.egreso);
-      rows.push([f.categoria, f.principio, f.marcaComercial || '', f.dosis, f.via, f.frecuencia, f.fechaInicio, d, f.idoneidad, f.estado, f.fechaSuspension]);
+      rows.push([f.categoria, f.principio, f.marcaComercial || '', f.dosis, f.via, f.frecuencia, f.volumen || '', f.tiempo || '', f.velocidad || '', f.fechaInicio, d, f.idoneidad, f.estado, f.fechaSuspension]);
     });
 
     rows.push([], ["SOLUCIONES INTRAVENOSAS"]);
@@ -1661,6 +1686,9 @@ export default function App() {
         onAdmin={() => setViewingAdmin(true)}
         isPatientView={true}
         onBack={handleExitPatient}
+        onSaveChanges={handleSavePatientChanges}
+        saveDisabled={lockedByOtherUser || !draftDirty || isSavingDraft}
+        saveLoading={isSavingDraft}
         showSidebarToggle={true}
         onToggleSidebar={() => setIsPatientSidebarOpen((prev) => !prev)}
         notifications={notifications}
@@ -1747,7 +1775,7 @@ export default function App() {
 
             {activeTab === 'demographics' && <DemographicsTab patient={activePatientForEditing} updatePatient={updatePatient} allPatients={patients} />}
             {activeTab === 'conciliation' && <ConciliationTab patient={activePatientForEditing} updatePatient={updatePatient} />}
-            {activeTab === 'pharmacotherapy' && <PharmacotherapyTab patient={activePatientForEditing} updatePatient={updatePatient} />}
+            {activeTab === 'pharmacotherapy' && <PharmacotherapyTab patient={activePatientForEditing} sourcePatient={activePatient} updatePatient={updatePatient} />}
             {activeTab === 'prm' && <PrmTab patient={activePatientForEditing} updatePatient={updatePatient} />}
             {activeTab === 'labs' && <LabsTab patient={activePatientForEditing} updatePatient={updatePatient} />}
             {activeTab === 'micro' && <MicrobiologyTab patient={activePatientForEditing} updatePatient={updatePatient} />}
@@ -1757,7 +1785,13 @@ export default function App() {
 
         {/* --- VISTA DE IMPRESIÓN (solo campos con datos) --- */}
         <div className="hidden print:block">
-          <PrintPatientReport patient={activePatientForEditing} />
+          <PrintPatientReport
+            patient={activePatientForEditing}
+            calculateAge={calculateAge}
+            calculateDaysOfUse={calculateDaysOfUse}
+            preguntasEntrevista={PREGUNTAS_ENTREVISTA}
+            formatExcelDate={formatExcelDate}
+          />
         </div>
       </div>
       {lockModalNode}
@@ -1765,459 +1799,6 @@ export default function App() {
     </div>
   );
 }
-
-function PrintKeyValueSection({ title, entries, columns = 2 }) {
-  const rows = (entries || []).filter((entry) => hasMeaningfulValue(entry.value));
-  if (!rows.length) return null;
-
-  return (
-    <section className="border border-slate-200 rounded-lg p-4 print:border-slate-300 print:break-inside-avoid">
-      <h2 className="text-lg font-bold text-slate-800 mb-3">{title}</h2>
-      <div className={`grid grid-cols-1 ${columns === 2 ? 'md:grid-cols-2' : 'md:grid-cols-1'} gap-x-6 gap-y-2 text-sm text-slate-700`}>
-        {rows.map((entry) => (
-          <p key={`${title}-${entry.label}`}>
-            <strong>{entry.label}:</strong> {formatPrintValue(entry.keyName || entry.label, entry.value)}
-          </p>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function PrintObjectCardsSection({ title, items, fields }) {
-  const cards = (items || [])
-    .map((item, idx) => ({
-      idx,
-      values: fields
-        .map((field) => ({
-          label: field.label,
-          keyName: field.key,
-          value: item?.[field.key],
-        }))
-        .filter((entry) => hasMeaningfulValue(entry.value)),
-    }))
-    .filter((card) => card.values.length > 0);
-
-  if (!cards.length) return null;
-
-  return (
-    <section className="border border-slate-200 rounded-lg p-4 print:border-slate-300 space-y-3">
-      <h2 className="text-lg font-bold text-slate-800">{title}</h2>
-      {cards.map((card) => (
-        <div key={`${title}-${card.idx}`} className="border border-slate-200 rounded-md p-3 text-sm text-slate-700 print:break-inside-avoid">
-          <p className="font-semibold text-slate-800 mb-1">Registro {card.idx + 1}</p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
-            {card.values.map((entry) => (
-              <p key={`${title}-${card.idx}-${entry.label}`}>
-                <strong>{entry.label}:</strong> {formatPrintValue(entry.keyName, entry.value)}
-              </p>
-            ))}
-          </div>
-        </div>
-      ))}
-    </section>
-  );
-}
-
-function PrintLabsSection({ labs }) {
-  const labGroups = Object.entries(labs || {})
-    .map(([param, rows]) => {
-      const cleanRows = (rows || [])
-        .map((row) => {
-          const parts = [
-            hasMeaningfulValue(row?.date) ? `Fecha: ${formatPrintValue('date', row.date)}` : '',
-            hasMeaningfulValue(row?.value) ? `Valor: ${row.value}` : '',
-            hasMeaningfulValue(row?.unit) ? `Unidad: ${row.unit}` : '',
-            hasMeaningfulValue(row?.min) ? `Min: ${row.min}` : '',
-            hasMeaningfulValue(row?.max) ? `Max: ${row.max}` : '',
-          ].filter(Boolean);
-          return parts.join(' | ');
-        })
-        .filter((line) => hasMeaningfulValue(line));
-
-      return { param, cleanRows };
-    })
-    .filter((group) => group.cleanRows.length > 0);
-
-  if (!labGroups.length) return null;
-
-  return (
-    <section className="border border-slate-200 rounded-lg p-4 print:border-slate-300">
-      <h2 className="text-lg font-bold text-slate-800 mb-3">Laboratorios</h2>
-      <div className="space-y-3 text-sm text-slate-700">
-        {labGroups.map((group) => (
-          <div key={group.param} className="border border-slate-200 rounded-md p-3 print:break-inside-avoid">
-            <p className="font-semibold text-slate-800 mb-1">{group.param}</p>
-            <ul className="list-disc ml-5 space-y-1">
-              {group.cleanRows.map((line, idx) => (
-                <li key={`${group.param}-${idx}`}>{line}</li>
-              ))}
-            </ul>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function PrintPatientReport({ patient }) {
-  if (!patient) return null;
-
-  const d = patient.demographics || {};
-  const conc = patient.conciliacion || {};
-  const interview = patient.interview || {};
-
-  const interviewEntries = PREGUNTAS_ENTREVISTA
-    .map((q) => ({ label: q.text, keyName: q.id, value: interview[q.id] }))
-    .filter((entry) => hasMeaningfulValue(entry.value));
-
-  const concStatusEntries = [
-    {
-      label: 'Conciliación al ingreso',
-      keyName: 'ingreso',
-      value: conc.ingresoNA ? 'No aplica' : (conc.ingreso || []).length > 0 ? 'Realizada' : '',
-    },
-    {
-      label: 'Transición por área',
-      keyName: 'transicionArea',
-      value: conc.transicionAreaNA ? 'No aplica' : (conc.transicionesArea || []).length > 0 ? 'Realizada' : '',
-    },
-    {
-      label: 'Transición por médico',
-      keyName: 'transicionMedico',
-      value: conc.transicionMedicoNA ? 'No aplica' : conc.transicionMedico ? 'Realizada' : '',
-    },
-    {
-      label: 'Conciliación al egreso',
-      keyName: 'egreso',
-      value: conc.egresoNA ? 'No aplica' : (conc.egreso || []).length > 0 ? 'Realizada' : '',
-    },
-  ].filter((entry) => hasMeaningfulValue(entry.value));
-
-  return (
-    <div className="print:w-full print:bg-white print:p-8 space-y-5">
-      <div className="border-b-2 border-slate-800 pb-4 mb-2">
-        <h1 className="text-3xl font-black text-slate-800 uppercase tracking-wider">Expediente Clínico Farmacoterapéutico</h1>
-        <div className="mt-3 text-sm text-slate-700 space-y-1">
-          <p><strong>Paciente:</strong> {formatPrintValue('nombre', d.nombre) || 'Sin nombre'}</p>
-          {hasMeaningfulValue(d.identificadorInterno) && <p><strong>ID Interno:</strong> {d.identificadorInterno}</p>}
-          {hasMeaningfulValue(d.numeroPaciente) && <p><strong>Expediente:</strong> {d.numeroPaciente}</p>}
-          <p><strong>Fecha impresión:</strong> {new Date().toLocaleDateString()}</p>
-        </div>
-      </div>
-
-      <PrintKeyValueSection
-        title="Datos generales"
-        entries={[
-          { label: 'Número episodio', keyName: 'numeroEpisodio', value: d.numeroEpisodio },
-          { label: 'Fecha nacimiento', keyName: 'fechaNacimiento', value: d.fechaNacimiento },
-          { label: 'Género', keyName: 'genero', value: d.genero },
-          { label: 'Ingreso', keyName: 'ingreso', value: d.ingreso },
-          { label: 'Egreso', keyName: 'egreso', value: d.egreso },
-          { label: 'Habitación', keyName: 'habitacion', value: d.habitacion },
-          { label: 'Médico tratante', keyName: 'medico', value: d.medico },
-          { label: 'Tipo de paciente', keyName: 'tipoPaciente', value: d.tipoPaciente },
-          { label: 'Especialidad', keyName: 'especialidad', value: d.especialidad },
-        ]}
-      />
-
-      <PrintKeyValueSection
-        title="Datos clínicos"
-        entries={[
-          { label: 'Motivo de ingreso', keyName: 'motivoIngreso', value: d.motivoIngreso },
-          { label: 'Diagnóstico principal', keyName: 'diagnosticoPrincipal', value: d.diagnosticoPrincipal },
-          { label: 'Alergias', keyName: 'alergias', value: d.alergias },
-          { label: 'Intolerancias', keyName: 'intolerancias', value: d.intolerancias },
-          { label: 'Paciente embarazada', keyName: 'embarazada', value: d.embarazada },
-          { label: 'Semanas de gestación', keyName: 'semanasGestacion', value: d.semanasGestacion },
-          { label: 'Antecedentes', keyName: 'antecedentes', value: d.antecedentes },
-          { label: 'Comorbilidades', keyName: 'comorbilidades', value: d.comorbilidades },
-          { label: 'Observaciones generales', keyName: 'observacionesGenerales', value: d.observacionesGenerales },
-          { label: 'Peso (kg)', keyName: 'peso', value: d.peso },
-          { label: 'Altura (cm)', keyName: 'altura', value: d.altura },
-          { label: 'Tabaquismo', keyName: 'fuma', value: d.fuma },
-          { label: 'Alcoholismo', keyName: 'alcoholismo', value: d.alcoholismo },
-          { label: 'Toxicomanía', keyName: 'toxicomania', value: d.toxicomania },
-          { label: 'Detalles de adicciones', keyName: 'detallesAdicciones', value: d.detallesAdicciones },
-        ]}
-      />
-
-      <PrintKeyValueSection title="Entrevista de conciliación" entries={interviewEntries} columns={1} />
-      <PrintKeyValueSection title="Estado de conciliación" entries={concStatusEntries} />
-
-      <PrintObjectCardsSection
-        title="Conciliación al ingreso"
-        items={conc.ingreso || []}
-        fields={[
-          { key: 'principio', label: 'Principio activo' },
-          { key: 'marcaComercial', label: 'Marca comercial' },
-          { key: 'dosis', label: 'Dosis' },
-          { key: 'via', label: 'Vía' },
-          { key: 'desdeCuando', label: 'Desde cuándo' },
-          { key: 'ultimaTomaMedicamento', label: 'Última toma medicamento' },
-          { key: 'activo', label: 'Estado' },
-          { key: 'diasTratamiento', label: 'Días tratamiento' },
-          { key: 'sabeParaQue', label: 'Sabe para qué' },
-          { key: 'observacion', label: 'Observación' },
-        ]}
-      />
-
-      <PrintObjectCardsSection
-        title="Conciliación al egreso"
-        items={conc.egreso || []}
-        fields={[
-          { key: 'principio', label: 'Principio activo' },
-          { key: 'marcaComercial', label: 'Marca comercial' },
-          { key: 'dosis', label: 'Dosis' },
-          { key: 'frecuencia', label: 'Frecuencia' },
-          { key: 'via', label: 'Vía' },
-          { key: 'desdeCuando', label: 'Desde cuándo' },
-          { key: 'activo', label: 'Estado' },
-          { key: 'diasTratamiento', label: 'Días tratamiento' },
-          { key: 'sabeParaQue', label: 'Sabe para qué' },
-          { key: 'observacion', label: 'Observación' },
-        ]}
-      />
-
-      <PrintObjectCardsSection
-        title="Transiciones por área"
-        items={conc.transicionesArea || []}
-        fields={[
-          { key: 'fecha', label: 'Fecha' },
-          { key: 'origen', label: 'Origen' },
-          { key: 'destino', label: 'Destino' },
-        ]}
-      />
-
-      <PrintObjectCardsSection
-        title="Perfil farmacoterapéutico"
-        items={patient.perfilFarmaco || []}
-        fields={[
-          { key: 'categoria', label: 'Categoría' },
-          { key: 'principio', label: 'Principio activo' },
-          { key: 'marcaComercial', label: 'Marca comercial' },
-          { key: 'presentacion', label: 'Presentación' },
-          { key: 'dosis', label: 'Dosis' },
-          { key: 'via', label: 'Vía' },
-          { key: 'frecuencia', label: 'Frecuencia' },
-          { key: 'fechaInicio', label: 'Fecha inicio' },
-          { key: 'idoneidad', label: 'Idoneidad' },
-          { key: 'estado', label: 'Estado' },
-          { key: 'fechaSuspension', label: 'Fecha suspensión' },
-          { key: 'observaciones', label: 'Observaciones' },
-        ]}
-      />
-
-      <PrintObjectCardsSection
-        title="Soluciones intravenosas"
-        items={patient.solucionesIV || []}
-        fields={[
-          { key: 'solucion', label: 'Solución' },
-          { key: 'volumen', label: 'Volumen (mL)' },
-          { key: 'tiempo', label: 'Tiempo (hr)' },
-          { key: 'velocidad', label: 'Velocidad (mL/hr)' },
-          { key: 'frecuencia', label: 'Frecuencia' },
-          { key: 'fechaInicio', label: 'Fecha inicio' },
-          { key: 'estado', label: 'Estado' },
-          { key: 'fechaSuspension', label: 'Fecha suspensión' },
-        ]}
-      />
-
-      <PrintObjectCardsSection
-        title="PRM"
-        items={patient.prms || []}
-        fields={[
-          { key: 'fecha', label: 'Fecha' },
-          { key: 'area', label: 'Área' },
-          { key: 'medicamento', label: 'Medicamento' },
-          { key: 'via', label: 'Vía' },
-          { key: 'grupo', label: 'Grupo' },
-          { key: 'descripcion', label: 'Descripción' },
-          { key: 'categoria', label: 'Categoría' },
-          { key: 'analisis', label: 'Análisis' },
-          { key: 'causaRaiz', label: 'Causa raíz' },
-          { key: 'intervencion', label: 'Intervención' },
-          { key: 'descIntervencion', label: 'Detalle intervención' },
-          { key: 'aceptacion', label: 'Aceptación' },
-          { key: 'resolucion', label: 'Resolución' },
-          { key: 'gravedad', label: 'Gravedad' },
-          { key: 'reportadoCalidad', label: 'Reportado calidad' },
-        ]}
-      />
-
-      <PrintObjectCardsSection
-        title="Interacciones medicamentosas"
-        items={patient.interacciones || []}
-        fields={[
-          { key: 'fecha', label: 'Fecha' },
-          { key: 'medicamentos', label: 'Medicamentos involucrados' },
-          { key: 'grado', label: 'Grado' },
-          { key: 'consecuencia', label: 'Consecuencia' },
-        ]}
-      />
-
-      <PrintLabsSection labs={patient.labs || {}} />
-
-      <PrintObjectCardsSection
-        title="Microbiología"
-        items={patient.microbiologia || []}
-        fields={[
-          { key: 'fechaMuestra', label: 'Fecha muestra' },
-          { key: 'tipoMuestra', label: 'Tipo muestra' },
-          { key: 'sitioCultivo', label: 'Sitio cultivo' },
-          { key: 'microorganismo', label: 'Microorganismo' },
-          { key: 'sensibles', label: 'Sensibles' },
-          { key: 'resistentes', label: 'Resistentes' },
-          { key: 'observaciones', label: 'Observaciones' },
-        ]}
-      />
-
-      <PrintObjectCardsSection
-        title="Reacciones adversas (RAM)"
-        items={patient.ram || []}
-        fields={[
-          { key: 'fecha', label: 'Fecha' },
-          { key: 'medicamento', label: 'Medicamento' },
-          { key: 'severidad', label: 'Severidad' },
-          { key: 'gravedad', label: 'Gravedad' },
-          { key: 'quePaso', label: 'Qué pasó' },
-          { key: 'queSeHizo', label: 'Qué se hizo' },
-        ]}
-      />
-    </div>
-  );
-}
-
-// ==========================================
-// MODAL: FORMULARIO RÁPIDO Y DETECCIÓN DUPLICADOS CON PREVIEW
-// ==========================================
-function NewPatientModal({ patients, onClose, onCreateNew, onCreateReingreso }) {
-  const [formData, setFormData] = useState(() => {
-    const currentDateLocal = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0,16);
-    return { nombre: '', fechaNacimiento: '', numeroPaciente: '', identificadorInterno: '', fechaIngreso: currentDateLocal };
-  });
-
-  // Lógica de Autogeneración de Identificador Interno (FV-MMYY-CONSECUTIVO)
-  useEffect(() => {
-    if (!formData.fechaIngreso) return;
-    const newIdFV = generateInternalIdentifier(patients, formData.fechaIngreso);
-    
-    if (formData.identificadorInterno !== newIdFV) {
-      setFormData(prev => ({ ...prev, identificadorInterno: newIdFV }));
-    }
-  }, [formData.fechaIngreso, patients]);
-
-  // Detección en tiempo real (Sólo por Nombre + Fecha Nacimiento)
-  const duplicateMatch = useMemo(() => {
-    return patients.find(p => {
-      if (p.deleted) return false;
-      const hasName = p.demographics.nombre && formData.nombre && p.demographics.nombre.trim().length > 3;
-      const sameName = hasName && p.demographics.nombre.toLowerCase().trim() === formData.nombre.toLowerCase().trim();
-      const hasDob = p.demographics.fechaNacimiento && formData.fechaNacimiento;
-      const sameDob = hasDob && p.demographics.fechaNacimiento === formData.fechaNacimiento;
-      
-      return sameName && sameDob;
-    });
-  }, [formData, patients]);
-
-  // Recolectar todos los episodios previos del paciente detectado para el "Preview"
-  const duplicateEpisodes = useMemo(() => {
-    if (!duplicateMatch) return [];
-    const baseId = duplicateMatch.pacienteBaseId || duplicateMatch.id;
-    return patients
-      .filter(p => !p.deleted && (p.pacienteBaseId || p.id) === baseId)
-      .sort((a, b) => new Date(b.demographics.ingreso) - new Date(a.demographics.ingreso)); // El más reciente primero
-  }, [duplicateMatch, patients]);
-
-  return (
-    <div className="fixed inset-0 bg-slate-900 bg-opacity-50 flex items-center justify-center z-50 p-4">
-       <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden flex flex-col max-h-[90vh]">
-          <div className="bg-blue-600 p-4 text-white flex justify-between items-center shrink-0">
-             <h2 className="font-bold flex items-center"><UserPlus className="w-5 h-5 mr-2" /> Iniciar Nuevo Expediente</h2>
-             <button onClick={onClose} className="text-blue-200 hover:text-white"><X className="w-5 h-5"/></button>
-          </div>
-          <div className="p-6 space-y-4 overflow-y-auto flex-1">
-             <p className="text-sm text-slate-500 mb-2">Ingresa los datos base para validar en el sistema:</p>
-             <FormInput label="Nombre Completo" value={formData.nombre} onChange={e => setFormData({...formData, nombre: e.target.value})} placeholder="Ej. Juan Pérez García" />
-             <FormInput label="Fecha de Nacimiento" type="date" value={formData.fechaNacimiento} onChange={e => setFormData({...formData, fechaNacimiento: e.target.value})} />
-             <FormInput label="Fecha y Hora de Ingreso" type="datetime-local" value={formData.fechaIngreso} onChange={e => setFormData({...formData, fechaIngreso: e.target.value})} />
-             
-             <div className="grid grid-cols-2 gap-4">
-               <FormInput label="N° Paciente (Expediente)" value={formData.numeroPaciente} onChange={e => setFormData({...formData, numeroPaciente: e.target.value})} placeholder="Ingresa la HC" />
-               <div className="flex flex-col">
-                  <label className="text-sm font-semibold text-slate-600 mb-1 truncate">Identificador Interno (FV)</label>
-                  <input type="text" readOnly value={formData.identificadorInterno} className="border-slate-300 rounded-md shadow-sm sm:text-sm px-3 py-2 bg-slate-100 text-slate-500 font-mono border cursor-not-allowed" title="Generado automáticamente por el sistema" />
-               </div>
-             </div>
-
-             {/* ALERTA DE DUPLICIDAD CON HISTORIAL PREVIO Y DOBLE OPCIÓN */}
-             {duplicateMatch && (
-               <div className="mt-4 bg-amber-50 border border-amber-200 p-4 rounded-lg shadow-sm">
-                 <h4 className="font-bold text-amber-800 flex items-center mb-1"><AlertTriangle className="w-5 h-5 mr-2" /> ¡Atención! Paciente Existente</h4>
-                 <p className="text-sm text-amber-700 mb-3">Se encontró un registro para <strong>{duplicateMatch.demographics.nombre}</strong>. Revisa su historial previo de hospitalizaciones:</p>
-                 
-                 {/* PREVIEW DE HISTORIAL */}
-                 <div className="max-h-40 overflow-y-auto mb-4 space-y-2 pr-1 custom-scrollbar">
-                   {duplicateEpisodes.map((ep, idx) => {
-                     const isActivo = !ep.demographics.egreso;
-                     return (
-                       <div key={ep.id} className={`bg-white p-3 rounded-md border ${isActivo ? 'border-red-300 shadow-sm' : 'border-amber-100'} text-xs relative`}>
-                          <div className="flex justify-between items-center mb-1">
-                            <span className="font-bold text-slate-700 flex items-center">
-                              <History className="w-3 h-3 mr-1 text-slate-400" />
-                              Episodio {duplicateEpisodes.length - idx} {ep.demographics.numeroEpisodio ? `(${ep.demographics.numeroEpisodio})` : ''}
-                            </span>
-                            {isActivo && <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold text-[9px] uppercase tracking-wider">Activo Actual</span>}
-                          </div>
-                          
-                          <div className="grid grid-cols-2 gap-2 text-slate-600 mt-2">
-                            <div><span className="font-semibold">Ingreso:</span> {formatExcelDate(ep.demographics.ingreso).split(' ')[0]}</div>
-                            <div><span className="font-semibold">Egreso:</span> {ep.demographics.egreso ? formatExcelDate(ep.demographics.egreso).split(' ')[0] : '-'}</div>
-                          </div>
-                          
-                          {ep.demographics.diagnosticoPrincipal && (
-                            <div className="text-slate-500 mt-2 border-t border-slate-100 pt-1 truncate">
-                              <span className="font-semibold">Dx:</span> {ep.demographics.diagnosticoPrincipal}
-                            </div>
-                          )}
-                       </div>
-                     );
-                   })}
-                 </div>
-
-                 {duplicateEpisodes.some(ep => !ep.demographics.egreso) && (
-                    <p className="text-xs text-red-600 font-bold mb-3 flex items-center">
-                      <AlertTriangle className="w-4 h-4 mr-1" /> El paciente tiene un episodio de hospitalización actualmente activo.
-                    </p>
-                 )}
-
-                 {/* DOBLE BOTÓN DE DECISIÓN */}
-                 <div className="flex flex-col sm:flex-row gap-2 mt-4">
-                      <button onClick={() => onCreateReingreso(duplicateMatch, formData)} className="flex-1 bg-amber-600 hover:bg-amber-700 text-white py-2 px-3 rounded-md font-bold shadow transition flex items-center justify-center text-sm">
-                       <Layers className="w-4 h-4 mr-2" /> Agregar como Reingreso
-                    </button>
-                    <button onClick={() => onCreateNew(formData)} className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 py-2 px-3 rounded-md font-bold shadow-sm transition flex items-center justify-center text-sm">
-                       <UserPlus className="w-4 h-4 mr-2" /> Crear Perfil Nuevo
-                    </button>
-                 </div>
-               </div>
-             )}
-
-             {!duplicateMatch && (
-               <button onClick={() => onCreateNew(formData)} className="mt-6 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-lg shadow transition-colors flex items-center justify-center">
-                  Crear Nuevo Perfil
-               </button>
-             )}
-          </div>
-       </div>
-    </div>
-  );
-}
-
-
-// ==========================================
-// COMPONENTES GLOBALES (Auth, Nav, Dashboard)
-// ==========================================
 
 function LoginScreen({ users, onLogin }) {
   const [username, setUsername] = useState('');
@@ -2254,11 +1835,11 @@ function LoginScreen({ users, onLogin }) {
       <div className="w-full max-w-md rounded-2xl border border-white/15 bg-white/95 shadow-2xl p-5 sm:p-8">
         <div className="flex justify-center mb-5">
           <div className="inline-flex items-center gap-2 rounded-full bg-blue-100 px-4 py-2 text-blue-700 text-sm font-semibold">
-            <ShieldCheck className="w-4 h-4" /> Version {APP_VERSION}
+            <ShieldCheck className="w-4 h-4" /> Versión {APP_VERSION}
           </div>
         </div>
 
-        <h1 className="text-2xl sm:text-3xl font-black text-slate-800 text-center">HIS Farmacia Clinica</h1>
+        <h1 className="text-2xl sm:text-3xl font-black text-slate-800 text-center">HIS Farmacia Clínica</h1>
         <p className="text-center text-slate-500 mt-2 mb-6 text-sm">Accede para continuar al sistema</p>
 
         {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 border border-red-200">{error}</div>}
@@ -2276,26 +1857,27 @@ function LoginScreen({ users, onLogin }) {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Contrasena</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Contraseña</label>
             <input
               type="password"
               value={password}
               onChange={e => setPassword(e.target.value)}
               className="w-full border border-slate-300 rounded-lg shadow-sm focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 px-4 py-2.5"
-              placeholder="Ingresa tu contrasena"
+              placeholder="Ingresa tu contraseña"
               required
             />
           </div>
           <button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center transition-colors disabled:opacity-70 shadow-sm">
-            <Lock className="w-5 h-5 mr-2" /> {loading ? 'Validando...' : 'Iniciar Sesion'}
+            <Lock className="w-5 h-5 mr-2" /> {loading ? 'Validando...' : 'Iniciar Sesión'}
           </button>
         </form>
 
-        <p className="text-center mt-5 text-xs text-slate-500">Sistema de gestion farmacoterapeutica | {APP_VERSION}</p>
+        <p className="text-center mt-5 text-xs text-slate-500">Sistema de gestión farmacoterapéutica | {APP_VERSION}</p>
       </div>
     </div>
   );
 }
+
 
 function AdminPanel({ users, setUsers, onClose, currentUser, onLogout }) {
   const [editingId, setEditingId] = useState(null);
@@ -3694,93 +3276,217 @@ function ConciliationTable({ items, type, onUpdate, onRemove }) {
   );
 }
 
-function PharmacotherapyTab({ patient, updatePatient }) {
+function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
   const items = patient.perfilFarmaco || [];
   const solItems = patient.solucionesIV || [];
   const meta = patient.perfilFarmacoMeta || { evaluadoPrevioPrimeraDosis: false };
+  const [detailModal, setDetailModal] = useState({ open: false, type: 'pharma', itemId: '' });
+  const [deleteModal, setDeleteModal] = useState({ open: false, type: 'pharma', itemId: '', label: '' });
+  const persistedPharmaById = useMemo(
+    () => new Map((sourcePatient?.perfilFarmaco || []).map((item) => [item.id, item])),
+    [sourcePatient?.perfilFarmaco],
+  );
+  const persistedSolById = useMemo(
+    () => new Map((sourcePatient?.solucionesIV || []).map((item) => [item.id, item])),
+    [sourcePatient?.solucionesIV],
+  );
+
+  const PHARMA_MODAL_FIELDS = ['presentacion', 'via', 'frecuencia', 'volumen', 'tiempo', 'velocidad', 'idoneidad', 'fechaSuspension', 'observaciones', 'prn', 'prnSituacion'];
+  const PHARMA_DEFAULTS = {
+    presentacion: '',
+    via: '',
+    frecuencia: '',
+    volumen: '',
+    tiempo: '',
+    velocidad: '',
+    idoneidad: 'Pendiente',
+    fechaSuspension: '',
+    observaciones: '',
+    prn: false,
+    prnSituacion: '',
+  };
+
+  const SOL_MODAL_FIELDS = ['tiempo', 'velocidad', 'frecuencia', 'fechaSuspension'];
+  const SOL_DEFAULTS = {
+    tiempo: '',
+    velocidad: '',
+    frecuencia: '',
+    fechaSuspension: '',
+  };
+
+  const normalizeFieldValue = (value) => {
+    if (value === undefined || value === null) return '';
+    return String(value).trim();
+  };
+
+  const hasModalOnlyChanges = (currentItem, persistedItem, fields, defaults = {}) => {
+    if (!currentItem) return false;
+
+    if (!persistedItem) {
+      return fields.some((field) => normalizeFieldValue(currentItem[field]) !== normalizeFieldValue(defaults[field] ?? ''));
+    }
+
+    return fields.some((field) => normalizeFieldValue(currentItem[field]) !== normalizeFieldValue(persistedItem[field]));
+  };
+
+  const recalculateInfusionFields = (item, field) => {
+    const updatedItem = { ...item };
+    const v = parseFloat(updatedItem.volumen);
+    const t = parseFloat(updatedItem.tiempo);
+    const r = parseFloat(updatedItem.velocidad);
+    const hasV = Number.isFinite(v) && v > 0;
+    const hasT = Number.isFinite(t) && t > 0;
+    const hasR = Number.isFinite(r) && r > 0;
+
+    if (field === 'volumen') {
+      if (hasV && hasT) updatedItem.velocidad = (v / t).toFixed(2);
+      else if (hasV && hasR) updatedItem.tiempo = (v / r).toFixed(2);
+      else if (!hasV) {
+        updatedItem.tiempo = '';
+        updatedItem.velocidad = '';
+      }
+    } else if (field === 'tiempo') {
+      if (hasV && hasT) updatedItem.velocidad = (v / t).toFixed(2);
+      else if (!hasT) updatedItem.velocidad = '';
+    } else if (field === 'velocidad') {
+      if (hasV && hasR) updatedItem.tiempo = (v / r).toFixed(2);
+      else if (!hasR) updatedItem.tiempo = '';
+    }
+
+    return updatedItem;
+  };
 
   const addItem = () => {
-    const newItem = { id: Date.now().toString(), categoria: '', principio: '', marcaComercial: '', presentacion: '', dosis: '', via: '', frecuencia: '', fechaInicio: new Date().toISOString().split('T')[0], estado: 'Activo', idoneidad: 'Pendiente', fechaSuspension: '', observaciones: '' };
+    const newItem = { id: Date.now().toString(), categoria: '', principio: '', marcaComercial: '', presentacion: '', dosis: '', via: '', frecuencia: '', volumen: '', tiempo: '', velocidad: '', fechaInicio: new Date().toISOString().split('T')[0], estado: 'Activo', idoneidad: 'Pendiente', fechaSuspension: '', observaciones: '', prn: false, prnSituacion: '' };
     updatePatient({ perfilFarmaco: [...items, newItem] });
   };
-  const updateItem = (id, field, value) => updatePatient({ perfilFarmaco: items.map(item => item.id === id ? { ...item, [field]: value } : item) });
+
+  const updateItem = (id, field, value) => {
+    const newList = items.map((item) => {
+      if (item.id !== id) return item;
+      let updatedItem = { ...item, [field]: value };
+      if (field === 'volumen' || field === 'tiempo' || field === 'velocidad') {
+        updatedItem = recalculateInfusionFields(updatedItem, field);
+      }
+      return updatedItem;
+    });
+    updatePatient({ perfilFarmaco: newList });
+  };
+
   const updateItemStatus = (id, estado) => {
     const today = new Date().toISOString().split('T')[0];
-    const newList = items.map(item => {
+    const newList = items.map((item) => {
       if (item.id !== id) return item;
       return {
         ...item,
         estado,
-        fechaSuspension: estado === 'Suspendido' ? (item.fechaSuspension || today) : ''
+        fechaSuspension: estado === 'Suspendido' ? (item.fechaSuspension || today) : '',
       };
     });
     updatePatient({ perfilFarmaco: newList });
   };
-  const removeItem = (id) => updatePatient({ perfilFarmaco: items.filter(item => item.id !== id) });
-  
-  // --- Lógica para Soluciones Intravenosas ---
+
+  const removeItem = (id) => updatePatient({ perfilFarmaco: items.filter((item) => item.id !== id) });
+
   const addSolucion = () => {
     const newItem = { id: Date.now().toString(), solucion: '', volumen: '', tiempo: '', velocidad: '', frecuencia: '', fechaInicio: new Date().toISOString().split('T')[0], estado: 'Activo', fechaSuspension: '' };
     updatePatient({ solucionesIV: [...solItems, newItem] });
   };
-  
-  const updateSolucion = (id, field, value) => {
-    const newList = solItems.map(item => {
-      if (item.id === id) {
-        let updatedItem = { ...item, [field]: value };
-        
-        // Auto-cálculos si el usuario modifica volumen, tiempo o velocidad
-        const v = parseFloat(updatedItem.volumen);
-        const t = parseFloat(updatedItem.tiempo);
-        const r = parseFloat(updatedItem.velocidad);
 
-        if (field === 'volumen') {
-           if (t > 0) updatedItem.velocidad = (v / t).toFixed(2);
-           else if (r > 0) updatedItem.tiempo = (v / r).toFixed(2);
-        } else if (field === 'tiempo') {
-           if (v > 0 && t > 0) updatedItem.velocidad = (v / t).toFixed(2);
-           else if (t === 0 || isNaN(t)) updatedItem.velocidad = '';
-        } else if (field === 'velocidad') {
-           if (v > 0 && r > 0) updatedItem.tiempo = (v / r).toFixed(2);
-           else if (r === 0 || isNaN(r)) updatedItem.tiempo = '';
-        }
-        return updatedItem;
+  const updateSolucion = (id, field, value) => {
+    const newList = solItems.map((item) => {
+      if (item.id !== id) return item;
+      let updatedItem = { ...item, [field]: value };
+      if (field === 'volumen' || field === 'tiempo' || field === 'velocidad') {
+        updatedItem = recalculateInfusionFields(updatedItem, field);
       }
-      return item;
+      return updatedItem;
     });
     updatePatient({ solucionesIV: newList });
   };
 
   const updateSolucionStatus = (id, estado) => {
     const today = new Date().toISOString().split('T')[0];
-    const newList = solItems.map(item => {
+    const newList = solItems.map((item) => {
       if (item.id !== id) return item;
       return {
         ...item,
         estado,
-        fechaSuspension: estado === 'Suspendido' ? (item.fechaSuspension || today) : ''
+        fechaSuspension: estado === 'Suspendido' ? (item.fechaSuspension || today) : '',
       };
     });
     updatePatient({ solucionesIV: newList });
   };
-  
-  const removeSolucion = (id) => updatePatient({ solucionesIV: solItems.filter(item => item.id !== id) });
 
+  const removeSolucion = (id) => updatePatient({ solucionesIV: solItems.filter((item) => item.id !== id) });
   const updateMeta = (field, value) => updatePatient({ perfilFarmacoMeta: { ...meta, [field]: value } });
 
-  const pendientes = items.filter(i => !CATEGORIAS_FARMACO.includes(i.categoria));
-  const atbs = items.filter(i => i.categoria === 'Antibiótico');
-  const altos = items.filter(i => i.categoria === 'Alto Riesgo');
-  const gens = items.filter(i => i.categoria === 'General');
+  const pendientes = items.filter((i) => !CATEGORIAS_FARMACO.includes(i.categoria));
+  const atbs = items.filter((i) => i.categoria === 'Antibiótico');
+  const altos = items.filter((i) => i.categoria === 'Alto Riesgo');
+  const gens = items.filter((i) => i.categoria === 'General');
+
+  const openPharmaDetail = (itemId) => setDetailModal({ open: true, type: 'pharma', itemId });
+  const openSolucionDetail = (itemId) => setDetailModal({ open: true, type: 'solucion', itemId });
+  const closeDetailModal = () => setDetailModal({ open: false, type: 'pharma', itemId: '' });
+  const closeDeleteModal = () => setDeleteModal({ open: false, type: 'pharma', itemId: '', label: '' });
+
+  const requestDeletePharma = (item) => {
+    setDeleteModal({
+      open: true,
+      type: 'pharma',
+      itemId: item.id,
+      label: item.principio || 'este medicamento',
+    });
+  };
+
+  const requestDeleteSolucion = (item) => {
+    setDeleteModal({
+      open: true,
+      type: 'solucion',
+      itemId: item.id,
+      label: item.solucion || 'esta solución IV',
+    });
+  };
+
+  const confirmDeleteItem = () => {
+    if (!deleteModal.itemId) {
+      closeDeleteModal();
+      return;
+    }
+
+    if (deleteModal.type === 'pharma') removeItem(deleteModal.itemId);
+    if (deleteModal.type === 'solucion') removeSolucion(deleteModal.itemId);
+    closeDeleteModal();
+  };
+
+  const selectedPharmaItem = detailModal.type === 'pharma'
+    ? items.find((item) => item.id === detailModal.itemId) || null
+    : null;
+
+  const selectedSolucionItem = detailModal.type === 'solucion'
+    ? solItems.find((item) => item.id === detailModal.itemId) || null
+    : null;
+
+  useEffect(() => {
+    if (!detailModal.open) return;
+    if (detailModal.type === 'pharma' && !selectedPharmaItem) closeDetailModal();
+    if (detailModal.type === 'solucion' && !selectedSolucionItem) closeDetailModal();
+  }, [detailModal, selectedPharmaItem, selectedSolucionItem]);
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center border-b pb-2">
         <h2 className="text-2xl font-bold text-slate-800">Prescripciones Intrahospitalarias</h2>
         <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-           <button onClick={addSolucion} className="w-full sm:w-auto bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Solución IV</button>
-            <button onClick={addItem} className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
+          <button onClick={addSolucion} className="w-full sm:w-auto bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Solución IV</button>
+          <button onClick={addItem} className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
         </div>
+      </div>
+
+      <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-800 flex items-center gap-2">
+        <span className="inline-block w-3 h-3 rounded-full bg-violet-500" aria-hidden="true"></span>
+        Si una fila aparece en morado, significa que es un medicamento PRN (Por Razón Necesaria).
       </div>
 
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 flex justify-start sm:justify-end shadow-sm print:bg-transparent print:border-none print:shadow-none mb-4">
@@ -3791,55 +3497,88 @@ function PharmacotherapyTab({ patient, updatePatient }) {
       </div>
 
       {pendientes.length > 0 && (
-        <PharmaSection title="Clasificación inicial de fármacos" items={pendientes} updateItem={updateItem} updateItemStatus={updateItemStatus} removeItem={removeItem} patient={patient} theme="blue" />
+        <PharmaSection
+          title="Clasificación inicial de fármacos"
+          items={pendientes}
+          updateItem={updateItem}
+          updateItemStatus={updateItemStatus}
+          onDeleteItem={requestDeletePharma}
+          onViewItem={openPharmaDetail}
+          hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
+          theme="blue"
+        />
       )}
-      <PharmaSection title="Terapia Antimicrobiana" items={atbs} updateItem={updateItem} updateItemStatus={updateItemStatus} removeItem={removeItem} patient={patient} theme="orange" />
-      <PharmaSection title="Medicamentos de Alto Riesgo" items={altos} updateItem={updateItem} updateItemStatus={updateItemStatus} removeItem={removeItem} patient={patient} theme="red" />
-      <PharmaSection title="Medicamentos Generales" items={gens} updateItem={updateItem} updateItemStatus={updateItemStatus} removeItem={removeItem} patient={patient} theme="blue" />
-      
-      {/* SECCIÓN DE SOLUCIONES INTRAVENOSAS */}
+      <PharmaSection
+        title="Terapia Antimicrobiana"
+        items={atbs}
+        updateItem={updateItem}
+        updateItemStatus={updateItemStatus}
+        onDeleteItem={requestDeletePharma}
+        onViewItem={openPharmaDetail}
+        hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
+        theme="orange"
+      />
+      <PharmaSection
+        title="Medicamentos de Alto Riesgo"
+        items={altos}
+        updateItem={updateItem}
+        updateItemStatus={updateItemStatus}
+        onDeleteItem={requestDeletePharma}
+        onViewItem={openPharmaDetail}
+        hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
+        theme="red"
+      />
+      <PharmaSection
+        title="Medicamentos Generales"
+        items={gens}
+        updateItem={updateItem}
+        updateItemStatus={updateItemStatus}
+        onDeleteItem={requestDeletePharma}
+        onViewItem={openPharmaDetail}
+        hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
+        theme="blue"
+      />
+
       <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mb-6 print:border-slate-300 print:shadow-none mt-8">
-        <div className={`px-4 py-2 font-bold border-b bg-cyan-100 text-cyan-900 border-cyan-200 print:bg-slate-100 print:text-black print:border-slate-300`}>Soluciones Intravenosas (Fluidos)</div>
-        <div className="overflow-x-auto overscroll-x-contain print:overflow-visible">
-          <table className="min-w-[1120px] text-xs sm:text-sm border-collapse">
+        <div className="px-4 py-2 font-bold border-b bg-cyan-100 text-cyan-900 border-cyan-200 print:bg-slate-100 print:text-black print:border-slate-300">Soluciones Intravenosas (Fluidos)</div>
+        <div className="overflow-x-auto md:overflow-x-visible overscroll-x-contain print:overflow-visible">
+          <table className="w-full min-w-[720px] md:min-w-0 table-fixed text-[11px] md:text-xs lg:text-sm border-collapse">
             <thead className="bg-slate-50 border-b print:bg-white">
               <tr>
-                <th className="p-2 text-left font-semibold">Solución Base</th>
-                <th className="p-2 text-left font-semibold w-24">Volumen (mL)</th>
-                <th className="p-2 text-left font-semibold w-24">Tiempo (hr)</th>
-                <th className="p-2 text-left font-semibold w-28">Velocidad (mL/hr)</th>
-                <th className="p-2 text-left font-semibold w-20">Frecuencia</th>
-                <th className="p-2 text-left font-semibold w-28">F. Inicio</th>
-                <th className="p-2 text-center font-semibold w-12">Días</th>
-                <th className="p-2 text-left font-semibold w-24">Estado</th>
-                <th className="p-2 text-left font-semibold w-28">F. Susp.</th>
-                <th className="p-2 text-center font-semibold w-8 print:hidden"></th>
+                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[12%]">Categoría</th>
+                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[28%]">Principio Activo</th>
+                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[8%]">Marca Com.</th>
+                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[14%]">Dosis</th>
+                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[15%]">F. Inicio</th>
+                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[13%]">Estado</th>
+                <th className="p-1.5 md:p-2 text-center font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[10%] print:hidden">Acciones</th>
               </tr>
             </thead>
             <tbody>
-              {solItems.length === 0 && <tr><td colSpan="10" className="p-3 text-center text-slate-400 italic">No hay soluciones IV registradas.</td></tr>}
-              {solItems.map(item => {
+              {solItems.length === 0 && <tr><td colSpan="7" className="p-3 text-center text-slate-400 italic">No hay soluciones IV registradas.</td></tr>}
+              {solItems.map((item) => {
                 const isSuspended = item.estado === 'Suspendido';
-                const endCalculationDate = isSuspended ? item.fechaSuspension : patient.demographics.egreso;
-                const dias = calculateDaysOfUse(item.fechaInicio, endCalculationDate);
-                
+                const modalOnlyChanged = hasModalOnlyChanges(item, persistedSolById.get(item.id), SOL_MODAL_FIELDS, SOL_DEFAULTS);
+
                 return (
-                  <tr key={item.id} className={`border-b transition-colors ${isSuspended ? 'bg-slate-100 opacity-75 print:opacity-100 print:bg-slate-50' : 'hover:bg-cyan-50'}`}>
-                    <td className="p-1"><input type="text" placeholder="Ej. Sol. Salina 0.9%" className={`w-full border-slate-300 rounded text-xs font-medium print:border-none print:bg-transparent ${isSuspended?'line-through text-slate-500 bg-slate-200':''}`} value={item.solucion} onChange={(e) => updateSolucion(item.id, 'solucion', e.target.value)} /></td>
-                    <td className="p-1"><input type="number" step="0.1" className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.volumen} onChange={(e) => updateSolucion(item.id, 'volumen', e.target.value)} /></td>
-                    <td className="p-1"><input type="number" step="0.1" className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.tiempo} onChange={(e) => updateSolucion(item.id, 'tiempo', e.target.value)} /></td>
-                    <td className="p-1"><input type="number" step="0.1" className={`w-full border-slate-300 rounded text-xs font-bold text-cyan-700 print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.velocidad} onChange={(e) => updateSolucion(item.id, 'velocidad', e.target.value)} /></td>
-                    <td className="p-1"><input type="text" placeholder="Ej. c/8h o Cont." className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.frecuencia} onChange={(e) => updateSolucion(item.id, 'frecuencia', e.target.value)} /></td>
-                    <td className="p-1"><input type="date" className={`w-full border-slate-300 rounded text-xs p-1 print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.fechaInicio} onChange={(e) => updateSolucion(item.id, 'fechaInicio', e.target.value)} /></td>
-                    <td className="p-1 text-center font-bold text-slate-700">{item.fechaInicio ? dias : '-'}</td>
-                    <td className="p-1">
-                      <select className={`w-full rounded text-xs p-1 font-bold print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-50 text-green-800 border-green-300'}`} value={item.estado} onChange={(e) => updateSolucionStatus(item.id, e.target.value)}>
+                  <tr key={item.id} className={`border-b border-slate-200 transition-colors ${isSuspended ? 'bg-slate-100/90 opacity-80 print:opacity-100 print:bg-slate-50' : 'hover:bg-cyan-50/50'}`}>
+                    <td className="p-1.5 md:p-2 text-[11px] font-semibold text-cyan-800">Solución IV</td>
+                    <td className="p-1 md:p-1.5"><input type="text" placeholder="Ej. Sol. Salina 0.9%" className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm font-medium print:border-none print:bg-transparent ${isSuspended ? 'line-through text-slate-500 bg-slate-200' : ''}`} value={item.solucion} onChange={(e) => updateSolucion(item.id, 'solucion', e.target.value)} /></td>
+                    <td className="p-1.5 md:p-2 text-center text-slate-400">-</td>
+                    <td className="p-1 md:p-1.5"><input type="number" step="0.1" className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.volumen || ''} onChange={(e) => updateSolucion(item.id, 'volumen', e.target.value)} /></td>
+                    <td className="p-1 md:p-1.5"><input type="date" className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm p-1 md:p-1.5 print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.fechaInicio} onChange={(e) => updateSolucion(item.id, 'fechaInicio', e.target.value)} /></td>
+                    <td className="p-1 md:p-1.5">
+                      <select className={`w-full h-8 lg:h-9 rounded-md text-xs lg:text-sm p-1 md:p-1.5 font-semibold border print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-50 text-green-800 border-green-300'}`} value={item.estado} onChange={(e) => updateSolucionStatus(item.id, e.target.value)}>
                         <option value="Activo">Activo</option>
-                        <option value="Suspendido">Suspend</option>
+                        <option value="Suspendido">Suspendido</option>
                       </select>
                     </td>
-                    <td className="p-1">{isSuspended && <input type="date" className="w-full border-red-300 bg-red-50 text-red-800 rounded text-xs p-1 print:border-none print:bg-transparent" value={item.fechaSuspension || ''} onChange={(e) => updateSolucion(item.id, 'fechaSuspension', e.target.value)} />}</td>
-                    <td className="p-1 text-center print:hidden"><button onClick={() => removeSolucion(item.id)} className="text-red-500 hover:text-red-700"><Trash2 className="w-4 h-4" /></button></td>
+                    <td className="p-1 md:p-1.5 text-center print:hidden">
+                      <div className="flex items-center justify-center gap-1.5 lg:gap-2">
+                        <button onClick={() => openSolucionDetail(item.id)} className={`inline-flex h-8 w-8 lg:h-9 lg:w-9 items-center justify-center rounded-md border shadow-sm transition ${modalOnlyChanged ? 'border-violet-300 bg-violet-100 text-violet-700 hover:bg-violet-200 hover:border-violet-400' : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 hover:border-blue-300'}`} title={modalOnlyChanged ? 'Hay cambios pendientes en campos del detalle' : 'Ver detalle'}><Eye className="w-4 h-4" /></button>
+                        <button onClick={() => requestDeleteSolucion(item)} className="inline-flex h-8 w-8 lg:h-9 lg:w-9 items-center justify-center rounded-md border border-red-200 bg-red-50 text-red-700 shadow-sm hover:bg-red-100 hover:border-red-300 transition" title="Eliminar"><Trash2 className="w-4 h-4" /></button>
+                      </div>
+                    </td>
                   </tr>
                 );
               })}
@@ -3847,11 +3586,49 @@ function PharmacotherapyTab({ patient, updatePatient }) {
           </table>
         </div>
       </div>
+
+      {deleteModal.open && (
+        <div className="fixed inset-0 z-[90] bg-slate-900/60 backdrop-blur-[1px] flex items-center justify-center p-4 print:hidden" onClick={closeDeleteModal}>
+          <div className="w-full max-w-md rounded-xl border border-red-200 bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-red-100 bg-red-50 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-white border border-red-200 text-red-700 flex items-center justify-center">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-800">Confirmar eliminación</h3>
+                <p className="text-xs text-slate-600">Esta acción no se puede deshacer.</p>
+              </div>
+            </div>
+            <div className="px-5 py-4 space-y-2">
+              <p className="text-sm text-slate-700 leading-relaxed">
+                ¿Deseas eliminar {deleteModal.type === 'solucion' ? 'la solución IV' : 'el medicamento'} <span className="font-semibold text-slate-900">"{deleteModal.label}"</span>?
+              </p>
+            </div>
+            <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2">
+              <button onClick={closeDeleteModal} className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 bg-white hover:bg-slate-100 font-medium">Cancelar</button>
+              <button onClick={confirmDeleteItem} className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium">Eliminar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {detailModal.open && (
+        <MedicationDetailModal
+          type={detailModal.type}
+          item={detailModal.type === 'pharma' ? selectedPharmaItem : selectedSolucionItem}
+          onClose={closeDetailModal}
+          onPharmaFieldChange={updateItem}
+          onPharmaStatusChange={updateItemStatus}
+          onSolFieldChange={updateSolucion}
+          onSolStatusChange={updateSolucionStatus}
+          patient={patient}
+        />
+      )}
     </div>
   );
 }
 
-function PharmaSection({ title, items, updateItem, updateItemStatus, removeItem, patient, theme }) {
+function PharmaSection({ title, items, updateItem, updateItemStatus, onDeleteItem, onViewItem, hasModalOnlyChanges, theme }) {
   const headerColors = { orange: 'bg-orange-100 text-orange-900 border-orange-200', red: 'bg-red-100 text-red-900 border-red-200', blue: 'bg-slate-100 text-slate-800 border-slate-200' };
   const isMarSection = title === 'Medicamentos de Alto Riesgo';
 
@@ -3887,65 +3664,278 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, removeItem,
           </div>
         )}
       </div>
-      <div className="overflow-x-auto overscroll-x-contain print:overflow-visible">
-        <table className="min-w-[1400px] text-xs sm:text-sm border-collapse">
+
+      <div className="overflow-x-auto md:overflow-x-visible overscroll-x-contain print:overflow-visible">
+        <table className="w-full min-w-[720px] md:min-w-0 table-fixed text-[11px] md:text-xs lg:text-sm border-collapse">
           <thead className="bg-slate-50 border-b print:bg-white">
             <tr>
-              <th className="p-2 text-left font-semibold w-24">Categoría</th>
-              <th className="p-2 text-left font-semibold">Principio Activo</th>
-              <th className="p-2 text-left font-semibold">Marca Com.</th>
-              <th className="p-2 text-left font-semibold w-16">Present.</th>
-              <th className="p-2 text-left font-semibold w-16">Dosis</th>
-              <th className="p-2 text-left font-semibold w-16">Vía</th>
-              <th className="p-2 text-left font-semibold w-16">Frec.</th>
-              <th className="p-2 text-left font-semibold w-24">F. Inicio</th>
-              <th className="p-2 text-center font-semibold w-10" title="Días activos">Días</th>
-              <th className="p-2 text-left font-semibold w-24">Idoneidad</th>
-              <th className="p-2 text-left font-semibold w-24">Estado</th>
-              <th className="p-2 text-left font-semibold w-24">F. Susp.</th>
-              <th className="p-2 text-left font-semibold">Obs.</th>
-              <th className="p-2 text-center font-semibold w-8 print:hidden"></th>
+              <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[12%]">Categoría</th>
+              <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[26%]">Principio Activo</th>
+              <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[15%]">Marca Com.</th>
+              <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[14%]">Dosis</th>
+              <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[15%]">F. Inicio</th>
+              <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[12%]">Estado</th>
+              <th className="p-1.5 md:p-2 text-center font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[10%] print:hidden">Acciones</th>
             </tr>
           </thead>
           <tbody>
-            {sortedItems.length === 0 && <tr><td colSpan="14" className="p-3 text-center text-slate-400 italic">No hay registros.</td></tr>}
-            {sortedItems.map(item => {
+            {sortedItems.length === 0 && <tr><td colSpan="7" className="p-3 text-center text-slate-400 italic">No hay registros.</td></tr>}
+            {sortedItems.map((item) => {
               const isSuspended = item.estado === 'Suspendido';
-              const endCalculationDate = isSuspended ? item.fechaSuspension : patient.demographics.egreso;
-              const dias = calculateDaysOfUse(item.fechaInicio, endCalculationDate);
-              
-              return (
-                <tr key={item.id} className={`border-b transition-colors ${isSuspended ? 'bg-slate-100 opacity-75 print:opacity-100 print:bg-slate-50' : 'hover:bg-slate-50'}`}>
-                  <td className="p-1"><select className={`w-full border-slate-300 rounded text-xs p-1 print:appearance-none print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.categoria} onChange={(e) => updateItem(item.id, 'categoria', e.target.value)}><option value="">Seleccionar</option>{CATEGORIAS_FARMACO.map(c => <option key={c} value={c}>{c}</option>)}</select></td>
-                  <td className="p-1"><input type="text" className={`w-full border-slate-300 rounded text-xs font-medium print:border-none print:bg-transparent ${isSuspended?'line-through text-slate-500 bg-slate-200':''}`} value={item.principio} onChange={(e) => updateItem(item.id, 'principio', e.target.value)} /></td>
-                  <td className="p-1"><input type="text" className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} placeholder="Opcional" value={item.marcaComercial || ''} onChange={(e) => updateItem(item.id, 'marcaComercial', e.target.value)} /></td>
-                  <td className="p-1"><select className={`w-full border-slate-300 rounded text-xs p-1 print:appearance-none print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.presentacion} onChange={(e) => updateItem(item.id, 'presentacion', e.target.value)}><option value="">-</option>{PRESENTACIONES.map(p => <option key={p} value={p}>{p}</option>)}</select></td>
-                  <td className="p-1"><input type="text" className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.dosis} onChange={(e) => updateItem(item.id, 'dosis', e.target.value)} /></td>
-                  <td className="p-1"><select className={`w-full border-slate-300 rounded text-xs p-1 print:appearance-none print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.via} onChange={(e) => updateItem(item.id, 'via', e.target.value)}><option value="">-</option>{VIAS.map(v => <option key={v} value={v}>{v}</option>)}</select></td>
-                  <td className="p-1"><input type="text" className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.frecuencia} onChange={(e) => updateItem(item.id, 'frecuencia', e.target.value)} /></td>
-                  <td className="p-1"><input type="date" className={`w-full border-slate-300 rounded text-xs p-1 print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} value={item.fechaInicio} onChange={(e) => updateItem(item.id, 'fechaInicio', e.target.value)} /></td>
-                  <td className="p-1 text-center font-bold text-slate-700">{item.fechaInicio ? dias : '-'}</td>
-                  
-                  <td className="p-1">
-                    <select className={`w-full rounded text-xs p-1 font-bold border-slate-300 print:appearance-none print:border-none print:bg-transparent ${item.idoneidad === 'Idóneo' ? 'text-green-700' : item.idoneidad === 'No Idóneo' ? 'text-red-700 bg-red-50' : 'text-amber-600'}`} value={item.idoneidad || 'Pendiente'} onChange={(e) => updateItem(item.id, 'idoneidad', e.target.value)}>
-                      {IDONEIDAD_OPCIONES.map(o => <option key={o} value={o}>{o}</option>)}
-                    </select>
-                  </td>
+              const isPrn = item.prn === true;
+              const modalOnlyChanged = hasModalOnlyChanges?.(item) === true;
 
-                  <td className="p-1">
-                    <select className={`w-full rounded text-xs p-1 font-bold print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-50 text-green-800 border-green-300'}`} value={item.estado} onChange={(e) => updateItemStatus(item.id, e.target.value)}>
+              return (
+                <tr key={item.id} className={`border-b border-slate-200 transition-colors ${isPrn ? 'bg-violet-100/75 hover:bg-violet-100/90 [&_input]:bg-violet-50 [&_select]:bg-violet-50 [&_input]:border-violet-200 [&_select]:border-violet-200' : isSuspended ? 'bg-slate-100/90 opacity-80 print:opacity-100 print:bg-slate-50' : 'hover:bg-slate-50/70'} ${isPrn && isSuspended ? 'opacity-80 print:opacity-100' : ''}`}>
+                  <td className="p-1 md:p-1.5"><select className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm p-1 md:p-1.5 print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.categoria} onChange={(e) => updateItem(item.id, 'categoria', e.target.value)}><option value="">Seleccionar</option>{CATEGORIAS_FARMACO.map((c) => <option key={c} value={c}>{c}</option>)}</select></td>
+                  <td className="p-1 md:p-1.5"><input type="text" className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm font-medium print:border-none print:bg-transparent ${isSuspended ? 'line-through text-slate-500 bg-slate-200' : ''}`} value={item.principio} onChange={(e) => updateItem(item.id, 'principio', e.target.value)} /></td>
+                  <td className="p-1 md:p-1.5"><input type="text" className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} placeholder="Opcional" value={item.marcaComercial || ''} onChange={(e) => updateItem(item.id, 'marcaComercial', e.target.value)} /></td>
+                  <td className="p-1 md:p-1.5"><input type="text" className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.dosis} onChange={(e) => updateItem(item.id, 'dosis', e.target.value)} /></td>
+                  <td className="p-1 md:p-1.5"><input type="date" className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm p-1 md:p-1.5 print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.fechaInicio} onChange={(e) => updateItem(item.id, 'fechaInicio', e.target.value)} /></td>
+                  <td className="p-1 md:p-1.5">
+                    <select className={`w-full h-8 lg:h-9 rounded-md text-xs lg:text-sm p-1 md:p-1.5 font-semibold border print:appearance-none print:border-none print:bg-transparent ${isPrn ? 'bg-violet-100 text-violet-800 border-violet-300' : isSuspended ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-50 text-green-800 border-green-300'}`} value={item.estado} onChange={(e) => updateItemStatus(item.id, e.target.value)}>
                       <option value="Activo">Activo</option>
-                      <option value="Suspendido">Suspend</option>
+                      <option value="Suspendido">Suspendido</option>
                     </select>
                   </td>
-                  <td className="p-1">{isSuspended && <input type="date" className="w-full border-red-300 bg-red-50 text-red-800 rounded text-xs p-1 print:border-none print:bg-transparent" value={item.fechaSuspension || ''} onChange={(e) => updateItem(item.id, 'fechaSuspension', e.target.value)} />}</td>
-                  <td className="p-1"><input type="text" className={`w-full border-slate-300 rounded text-xs print:border-none print:bg-transparent ${isSuspended?'bg-slate-200':''}`} placeholder="Indicación..." value={item.observaciones} onChange={(e) => updateItem(item.id, 'observaciones', e.target.value)} /></td>
-                  <td className="p-1 text-center print:hidden"><button onClick={() => removeItem(item.id)} className="text-red-500 hover:text-red-700"><Trash2 className="w-4 h-4" /></button></td>
+                  <td className="p-1 md:p-1.5 text-center print:hidden">
+                    <div className="flex items-center justify-center gap-1.5 lg:gap-2">
+                      <button onClick={() => onViewItem(item.id)} className={`inline-flex h-8 w-8 lg:h-9 lg:w-9 items-center justify-center rounded-md border shadow-sm transition ${modalOnlyChanged ? 'border-violet-300 bg-violet-100 text-violet-700 hover:bg-violet-200 hover:border-violet-400' : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 hover:border-blue-300'}`} title={modalOnlyChanged ? 'Hay cambios pendientes en campos del detalle' : 'Ver detalle'}><Eye className="w-4 h-4" /></button>
+                      <button onClick={() => onDeleteItem(item)} className="inline-flex h-8 w-8 lg:h-9 lg:w-9 items-center justify-center rounded-md border border-red-200 bg-red-50 text-red-700 shadow-sm hover:bg-red-100 hover:border-red-300 transition" title="Eliminar"><Trash2 className="w-4 h-4" /></button>
+                    </div>
+                  </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPharmaStatusChange, onSolFieldChange, onSolStatusChange, patient }) {
+  if (!item) return null;
+
+  const isSolution = type === 'solucion';
+  const isHighRiskMed = !isSolution && item.categoria === 'Alto Riesgo';
+  const isSuspended = item.estado === 'Suspendido';
+  const endDate = isSuspended ? item.fechaSuspension : patient.demographics.egreso;
+  const days = calculateDaysOfUse(item.fechaInicio, endDate);
+  const [isVisible, setIsVisible] = useState(false);
+  const [isClosing, setIsClosing] = useState(false);
+  const [showMarHelp, setShowMarHelp] = useState(false);
+
+  const requestClose = useCallback(() => {
+    setIsVisible(false);
+    setIsClosing((prev) => prev || true);
+  }, []);
+
+  useEffect(() => {
+    const frameId = requestAnimationFrame(() => setIsVisible(true));
+    return () => cancelAnimationFrame(frameId);
+  }, []);
+
+  useEffect(() => {
+    if (!isClosing) return undefined;
+    const timeoutId = setTimeout(() => {
+      onClose();
+    }, 180);
+    return () => clearTimeout(timeoutId);
+  }, [isClosing, onClose]);
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') requestClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [requestClose]);
+
+  useEffect(() => {
+    setShowMarHelp(false);
+  }, [item.id, isHighRiskMed]);
+
+  const updateStatus = (value) => {
+    if (isSolution) {
+      onSolStatusChange(item.id, value);
+      return;
+    }
+    onPharmaStatusChange(item.id, value);
+  };
+
+  const updateField = (field, value) => {
+    if (isSolution) {
+      onSolFieldChange(item.id, field, value);
+      return;
+    }
+    onPharmaFieldChange(item.id, field, value);
+  };
+
+  return (
+    <div
+      className={`fixed inset-0 z-[85] flex items-center justify-center p-2 sm:p-4 lg:p-6 print:hidden transition-all duration-200 ${isVisible ? 'bg-slate-900/65 backdrop-blur-[1px] opacity-100' : 'bg-slate-900/0 backdrop-blur-0 opacity-0'}`}
+      onClick={requestClose}
+    >
+      <div
+        className={`w-full max-w-[98vw] sm:max-w-[94vw] md:max-w-[92vw] lg:max-w-6xl max-h-[96vh] md:max-h-[92vh] overflow-hidden rounded-xl md:rounded-2xl bg-gradient-to-br from-sky-200 via-violet-100 to-cyan-100 p-[1px] shadow-2xl transition-all duration-200 ${isVisible ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-4 scale-[0.98] opacity-0'}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="h-full w-full overflow-hidden rounded-[inherit] bg-white">
+          <div className="px-4 sm:px-5 py-4 border-b border-white/30 bg-gradient-to-r from-sky-600 via-blue-700 to-indigo-700 flex items-center justify-between gap-3 text-white">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-11 h-11 rounded-xl bg-white/15 border border-white/25 text-white flex items-center justify-center shadow-sm"><Eye className="w-5 h-5" /></div>
+              <div className="min-w-0">
+                <h3 className="font-bold text-white truncate">{isSolution ? 'Detalle de Solución IV' : 'Detalle de Medicamento'}</h3>
+                <p className="text-xs text-blue-100 truncate">{isSolution ? (item.solucion || 'Sin nombre') : (item.principio || 'Sin nombre')}</p>
+                <div className="mt-1 flex flex-wrap gap-1.5 text-[11px]">
+                  <span className="px-2 py-0.5 rounded-full border border-white/30 bg-white/10">{item.estado || 'Sin estado'}</span>
+                  <span className="px-2 py-0.5 rounded-full border border-white/30 bg-white/10">{isSolution ? 'Solución IV' : (item.categoria || 'Sin categoría')}</span>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {isHighRiskMed && (
+                <button
+                  type="button"
+                  onClick={() => setShowMarHelp((prev) => !prev)}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-semibold transition ${showMarHelp ? 'border-red-200 bg-red-100 text-red-800' : 'border-white/40 bg-white/15 text-white hover:bg-white/25'}`}
+                  title="Ver recomendaciones MAR"
+                  aria-label="Ver recomendaciones MAR"
+                >
+                  <CircleHelp className="w-3.5 h-3.5" /> MAR
+                </button>
+              )}
+              <button onClick={requestClose} className="p-2 rounded-lg text-white/90 hover:text-white hover:bg-white/15"><X className="w-4 h-4" /></button>
+            </div>
+          </div>
+
+          <div className="p-3 sm:p-4 md:p-5 overflow-y-auto max-h-[calc(96vh-190px)] md:max-h-[calc(92vh-198px)] space-y-4 bg-gradient-to-b from-white to-sky-50/30">
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-2.5"><p className="text-emerald-700">Estado</p><p className="font-bold text-emerald-900 mt-0.5">{item.estado || '-'}</p></div>
+              <div className="rounded-xl border border-blue-200 bg-blue-50 p-2.5"><p className="text-blue-700">Fecha inicio</p><p className="font-bold text-blue-900 mt-0.5">{item.fechaInicio || '-'}</p></div>
+              <div className="rounded-xl border border-violet-200 bg-violet-50 p-2.5"><p className="text-violet-700">Días activos</p><p className="font-bold text-violet-900 mt-0.5">{item.fechaInicio ? days : '-'}</p></div>
+              <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-2.5"><p className="text-cyan-700">Categoría</p><p className="font-bold text-cyan-900 mt-0.5">{isSolution ? 'Solución IV' : (item.categoria || '-')}</p></div>
+            </div>
+
+            {isHighRiskMed && showMarHelp && (
+              <div className="rounded-xl border border-red-200 bg-white/95 p-3 text-xs text-slate-700 shadow-sm">
+                <p className="font-bold text-red-700 mb-1">Recomendaciones MAR</p>
+                <p className="text-slate-500 mb-2">Medicamentos de alto riesgo a vigilar:</p>
+                <ol className="list-decimal pl-4 space-y-0.5">
+                  {MAR_RECOMENDACIONES.map((marItem) => (
+                    <li key={marItem}>{marItem}</li>
+                  ))}
+                </ol>
+              </div>
+            )}
+
+            {!isSolution ? (
+              <>
+                <div className="rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50 to-blue-50 p-3 sm:p-4 shadow-sm">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-7 h-7 rounded-lg bg-sky-100 text-sky-700 flex items-center justify-center"><ListChecks className="w-4 h-4" /></div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">Vista principal (orden de tabla)</p>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+                    <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormSelect label="Categoría" value={item.categoria || ''} onChange={(e) => updateField('categoria', e.target.value)} options={CATEGORIAS_FARMACO} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="Principio Activo" value={item.principio || ''} onChange={(e) => updateField('principio', e.target.value)} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="Marca Com." value={item.marcaComercial || ''} onChange={(e) => updateField('marcaComercial', e.target.value)} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="Dosis" value={item.dosis || ''} onChange={(e) => updateField('dosis', e.target.value)} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="F. Inicio" type="date" value={item.fechaInicio || ''} onChange={(e) => updateField('fechaInicio', e.target.value)} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormSelect label="Estado" value={item.estado || 'Activo'} onChange={(e) => updateStatus(e.target.value)} options={['Activo', 'Suspendido']} /></div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50 to-fuchsia-50 p-3 sm:p-4 shadow-sm">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-lg bg-violet-100 text-violet-700 flex items-center justify-center"><Layers className="w-4 h-4" /></div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-violet-700">Detalle farmacoterapéutico</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormSelect label="Presentación" value={item.presentacion || ''} onChange={(e) => updateField('presentacion', e.target.value)} options={PRESENTACIONES} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormSelect label="Vía" value={item.via || ''} onChange={(e) => updateField('via', e.target.value)} options={VIAS} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Frecuencia" value={item.frecuencia || ''} onChange={(e) => updateField('frecuencia', e.target.value)} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormSelect label="Idoneidad" value={item.idoneidad || 'Pendiente'} onChange={(e) => updateField('idoneidad', e.target.value)} options={IDONEIDAD_OPCIONES} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Volumen (mL)" type="number" value={item.volumen || ''} onChange={(e) => updateField('volumen', e.target.value)} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Tiempo (hr)" type="number" value={item.tiempo || ''} onChange={(e) => updateField('tiempo', e.target.value)} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Velocidad (mL/hr)" type="number" value={item.velocidad || ''} onChange={(e) => updateField('velocidad', e.target.value)} /></div>
+                    {isSuspended && <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Fecha suspensión" type="date" value={item.fechaSuspension || ''} onChange={(e) => updateField('fechaSuspension', e.target.value)} /></div>}
+                    <div className="rounded-lg border border-white/80 bg-white/90 p-2 shadow-sm md:col-span-2 xl:col-span-2">
+                      <label className="flex items-center gap-2 text-sm font-semibold text-slate-700 mb-2">
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 rounded border-slate-300 text-violet-600"
+                          checked={item.prn === true}
+                          onChange={(e) => updateField('prn', e.target.checked)}
+                        />
+                        PRN (Por Razón Necesaria)
+                      </label>
+                      <textarea
+                        rows={2}
+                        disabled={item.prn !== true}
+                        placeholder="Especifica en qué situación se debe administrar este medicamento..."
+                        className={`w-full border rounded-md shadow-sm sm:text-sm p-2 ${item.prn === true ? 'border-violet-300 bg-white text-slate-800 focus:border-violet-400 focus:ring-2 focus:ring-violet-100' : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed'}`}
+                        value={item.prnSituacion || ''}
+                        onChange={(e) => updateField('prnSituacion', e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-orange-50 p-3 sm:p-4 shadow-sm">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-7 h-7 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center"><FileText className="w-4 h-4" /></div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700">Observaciones clínicas</p>
+                  </div>
+                  <div className="rounded-lg border border-white/85 bg-white/90 p-2 shadow-sm">
+                    <div className="flex flex-col">
+                      <label className="text-sm font-semibold text-slate-600 mb-1">Observaciones</label>
+                      <textarea rows={4} className="border-slate-300 rounded-md shadow-sm sm:text-sm p-2 focus:border-blue-400 focus:ring-2 focus:ring-blue-100" value={item.observaciones || ''} onChange={(e) => updateField('observaciones', e.target.value)} />
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="rounded-2xl border border-cyan-200 bg-gradient-to-br from-cyan-50 to-sky-50 p-3 sm:p-4 shadow-sm">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-7 h-7 rounded-lg bg-cyan-100 text-cyan-700 flex items-center justify-center"><ListChecks className="w-4 h-4" /></div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-700">Vista principal (orden de tabla)</p>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><ReadOnlyField label="Categoría" value="Solución IV" /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Principio Activo" value={item.solucion || ''} onChange={(e) => updateField('solucion', e.target.value)} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><ReadOnlyField label="Marca Com." value="-" /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Dosis" type="number" value={item.volumen || ''} onChange={(e) => updateField('volumen', e.target.value)} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="F. Inicio" type="date" value={item.fechaInicio || ''} onChange={(e) => updateField('fechaInicio', e.target.value)} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormSelect label="Estado" value={item.estado || 'Activo'} onChange={(e) => updateStatus(e.target.value)} options={['Activo', 'Suspendido']} /></div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-indigo-200 bg-gradient-to-br from-indigo-50 to-violet-50 p-3 sm:p-4 shadow-sm">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-7 h-7 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center"><Layers className="w-4 h-4" /></div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700">Detalle de infusión</p>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Tiempo (hr)" type="number" value={item.tiempo || ''} onChange={(e) => updateField('tiempo', e.target.value)} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Velocidad (mL/hr)" type="number" value={item.velocidad || ''} onChange={(e) => updateField('velocidad', e.target.value)} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Frecuencia" value={item.frecuencia || ''} onChange={(e) => updateField('frecuencia', e.target.value)} /></div>
+                    {isSuspended && <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Fecha suspensión" type="date" value={item.fechaSuspension || ''} onChange={(e) => updateField('fechaSuspension', e.target.value)} /></div>}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="px-4 sm:px-5 py-3 border-t border-slate-200 bg-white/95 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+            <p className="text-xs text-slate-500">Edición visual optimizada para tablet y desktop.</p>
+            <button onClick={requestClose} className="px-4 py-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 text-white font-semibold shadow-sm">Cerrar detalle</button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -4095,6 +4085,15 @@ function LabsTab({ patient, updatePatient }) {
     updatePatient({ labs: { ...labs, [paramName]: currentData.filter(item => item.id !== id) } });
   };
 
+  const labGroupEntries = Object.entries(LAB_TEMPLATES);
+  const preferredGroupOrder = ['Función Renal', 'Marcadores de Infección / Inflamación'];
+  const orderedLabGroups = [
+    ...preferredGroupOrder
+      .map((name) => labGroupEntries.find(([groupName]) => groupName === name))
+      .filter(Boolean),
+    ...labGroupEntries.filter(([groupName]) => !preferredGroupOrder.includes(groupName)),
+  ];
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-end border-b pb-2">
@@ -4110,7 +4109,7 @@ function LabsTab({ patient, updatePatient }) {
         )}
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {Object.entries(LAB_TEMPLATES).map(([groupName, params]) => (
+        {orderedLabGroups.map(([groupName, params]) => (
           <div key={groupName} className="bg-white border rounded-xl shadow-sm overflow-hidden print:shadow-none print:border-slate-300">
             <h3 className="bg-slate-100 p-3 font-bold text-slate-700 border-b print:bg-slate-100">{groupName}</h3>
             <div className="p-4 space-y-4">
@@ -4261,3 +4260,4 @@ function ReadOnlyField({ label, value }) {
     </div>
   );
 }
+
