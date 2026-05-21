@@ -1,0 +1,703 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [ 4 0 R 6 0 R 8 0 R 10 0 R 12 0 R 14 0 R 16 0 R ] /Count 7 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 1844 >>
+stream
+BT
+/F1 11 Tf
+50 742 Td
+(GUIA DETALLADA - REINICIO DE BACKEND Y FRONTEND EN PRODUCCION) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Fecha: 2026-05-21) Tj
+0 -14 Td
+(Proyecto: FarmaClinic \(perfil coexistente\)) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(1\) OBJETIVO) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Esta guia explica, paso a paso:) Tj
+0 -14 Td
+(- Como reiniciar backend y frontend en produccion.) Tj
+0 -14 Td
+(- Donde correr cada comando.) Tj
+0 -14 Td
+(- Para que sirve cada comando.) Tj
+0 -14 Td
+(- Como validar que todo quedo bien.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(2\) ARQUITECTURA ACTUAL \(PRODUCCION\)) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(- Backend API: 127.0.0.1:4100) Tj
+0 -14 Td
+(- Frontend publico: http://10.69.40.7:8081/farmaclinic/) Tj
+0 -14 Td
+(- Contenedor frontend: farmaclinic-web) Tj
+0 -14 Td
+(- Base de datos FarmaClinic: contenedor farmaclinic-db \(127.0.0.1:3307\)) Tj
+0 -14 Td
+(- Backend como servicio systemd: farmaclinic-api) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(3\) CONVENCIONES DE EJECUCION) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Usa estas rutas segun el comando:) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(- [RUN IN] /home/sistemas/farmaclinic) Tj
+0 -14 Td
+(  - comandos docker) Tj
+0 -14 Td
+(  - validaciones curl publicas) Tj
+0 -14 Td
+(  - git pull \(si aplica\)) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(- [RUN IN] /home/sistemas/farmaclinic/backend) Tj
+0 -14 Td
+(  - comandos npm del backend \(si aplica\)) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(- [RUN IN] /home/sistemas/farmaclinic/frontend) Tj
+0 -14 Td
+(  - comandos npm del frontend y build) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(4\) REINICIO RAPIDO \(SIN BAJAR CAMBIOS\)) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(PASO 1 - REINICIAR BACKEND) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([RUN IN] /home/sistemas/farmaclinic) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Comando:) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  sudo systemctl restart farmaclinic-api) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 1545 >>
+stream
+BT
+/F1 11 Tf
+50 742 Td
+(Para que sirve:) Tj
+0 -14 Td
+(- Reinicia la API para recargar el proceso Node del backend.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(PASO 2 - REINICIAR FRONTEND) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([RUN IN] /home/sistemas/farmaclinic) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Comando:) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  docker restart farmaclinic-web) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Para que sirve:) Tj
+0 -14 Td
+(- Reinicia Nginx del frontend publicado en 8081.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(PASO 3 - VALIDAR SALUD) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([RUN IN] /home/sistemas/farmaclinic) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Comandos:) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  curl http://127.0.0.1:4100/api/health) Tj
+0 -14 Td
+(  curl http://127.0.0.1:8081/farmaclinic/api/health) Tj
+0 -14 Td
+(  curl http://127.0.0.1:8081/farmaclinic/) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Resultado esperado:) Tj
+0 -14 Td
+(- API health devuelve JSON con ok true.) Tj
+0 -14 Td
+(- Frontend responde HTML en /farmaclinic/.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(5\) REINICIO DESPUES DE BAJAR CAMBIOS \(RECOMENDADO\)) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Usa este flujo cuando hiciste git pull o cambios de codigo.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(PASO 0 - IR AL ROOT DEL REPO) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([RUN IN] Cualquier ruta) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  cd /home/sistemas/farmaclinic) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(PASO 1 - \(OPCIONAL\) BAJAR CAMBIOS) Tj
+0 -14 Td
+() Tj
+ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 1578 >>
+stream
+BT
+/F1 11 Tf
+50 742 Td
+([RUN IN] /home/sistemas/farmaclinic) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  git pull) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(PASO 2 - ACTUALIZAR BACKEND) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([RUN IN] /home/sistemas/farmaclinic/backend) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  cd /home/sistemas/farmaclinic/backend) Tj
+0 -14 Td
+(  npm ci || npm install) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Para que sirve:) Tj
+0 -14 Td
+(- Instala dependencias exactas del backend.) Tj
+0 -14 Td
+(- Si package-lock no esta alineado, usa fallback npm install.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(PASO 3 - ACTUALIZAR FRONTEND Y COMPILAR PRODUCCION) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([RUN IN] /home/sistemas/farmaclinic/frontend) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  cd /home/sistemas/farmaclinic/frontend) Tj
+0 -14 Td
+(  npm ci || npm install) Tj
+0 -14 Td
+(  cp -f .env.production.internal.example .env.production) Tj
+0 -14 Td
+(  npm run build) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Para que sirve:) Tj
+0 -14 Td
+(- Instalar dependencias frontend.) Tj
+0 -14 Td
+(- Preparar variables de entorno de produccion.) Tj
+0 -14 Td
+(- Generar archivos finales en frontend/dist.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(PASO 4 - REINICIAR BACKEND) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([RUN IN] /home/sistemas/farmaclinic) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  sudo systemctl restart farmaclinic-api) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(PASO 5 - REINICIAR FRONTEND) Tj
+0 -14 Td
+() Tj
+ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 1664 >>
+stream
+BT
+/F1 11 Tf
+50 742 Td
+([RUN IN] /home/sistemas/farmaclinic) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  docker restart farmaclinic-web) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(PASO 6 - VALIDAR DESPLIEGUE COMPLETO) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([RUN IN] /home/sistemas/farmaclinic) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  systemctl is-active farmaclinic-api) Tj
+0 -14 Td
+(  systemctl is-enabled farmaclinic-api) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(  docker ps --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}' | grep -E 'farmaclinic-) Tj
+0 -14 Td
+(web|farmaclinic-db|NAMES') Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(  curl http://127.0.0.1:4100/api/health) Tj
+0 -14 Td
+(  curl http://127.0.0.1:8081/farmaclinic/api/health) Tj
+0 -14 Td
+(  curl http://127.0.0.1:8081/farmaclinic/ | head -n 20) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Resultado esperado:) Tj
+0 -14 Td
+(- farmaclinic-api: active) Tj
+0 -14 Td
+(- farmaclinic-api: enabled) Tj
+0 -14 Td
+(- farmaclinic-web: Up) Tj
+0 -14 Td
+(- endpoints responden OK) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(6\) COMANDOS DE DIAGNOSTICO RAPIDO) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(VER LOGS BACKEND) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([RUN IN] /home/sistemas/farmaclinic) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  systemctl status farmaclinic-api --no-pager -l) Tj
+0 -14 Td
+(  journalctl -u farmaclinic-api -n 100 --no-pager) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(VER LOGS FRONTEND \(CONTENEDOR\)) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([RUN IN] /home/sistemas/farmaclinic) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  docker logs --tail 100 farmaclinic-web) Tj
+ET
+endstream
+endobj
+12 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 13 0 R >>
+endobj
+13 0 obj
+<< /Length 1459 >>
+stream
+BT
+/F1 11 Tf
+50 742 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(CONFIRMAR PUERTOS) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([RUN IN] /home/sistemas/farmaclinic) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  ss -lntp | grep ':4100') Tj
+0 -14 Td
+(  ss -lntp | grep ':8081') Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(7\) PROBLEMAS COMUNES Y SOLUCION) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(PROBLEMA A: BACKEND NO SUBE \(STATUS=203/EXEC\)) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Causa comun:) Tj
+0 -14 Td
+(- ExecStart de systemd apunta a una ruta invalida de node.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Solucion:) Tj
+0 -14 Td
+(- Revisar unidad en:) Tj
+0 -14 Td
+(  /etc/systemd/system/farmaclinic-api.service) Tj
+0 -14 Td
+(- Verificar ruta real de node:) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  which node) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(- Ajustar ExecStart y recargar:) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  sudo systemctl daemon-reload) Tj
+0 -14 Td
+(  sudo systemctl restart farmaclinic-api) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(PROBLEMA B: FRONTEND REINICIADO PERO NO VES CAMBIOS) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Causa comun:) Tj
+0 -14 Td
+(- build no actualizado o cache del navegador.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Solucion:) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  cd /home/sistemas/farmaclinic/frontend) Tj
+0 -14 Td
+(  npm run build) Tj
+0 -14 Td
+(  cd /home/sistemas/farmaclinic) Tj
+ET
+endstream
+endobj
+14 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 15 0 R >>
+endobj
+15 0 obj
+<< /Length 1602 >>
+stream
+BT
+/F1 11 Tf
+50 742 Td
+(  docker restart farmaclinic-web) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Y en navegador:) Tj
+0 -14 Td
+(- Ctrl+F5 \(recarga forzada\)) Tj
+0 -14 Td
+(- o probar en ventana incognito) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(PROBLEMA C: NPM CI FALLA EN FRONTEND) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Causa comun:) Tj
+0 -14 Td
+(- package-lock.json desincronizado con package.json.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Solucion:) Tj
+0 -14 Td
+(- usar fallback temporal:) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  npm install) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(8\) VERIFICACION FINAL PARA NEGOCIO) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Abrir en navegador:) Tj
+0 -14 Td
+(- http://10.69.40.7:8081/farmaclinic/) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(Checklist:) Tj
+0 -14 Td
+(- Login funciona.) Tj
+0 -14 Td
+(- Dashboard carga pacientes.) Tj
+0 -14 Td
+(- API responde sin errores.) Tj
+0 -14 Td
+(- Cambios recientes del front se reflejan.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(9\) RESUMEN EJECUTIVO \(COMANDOS MINIMOS\)) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([RUN IN] /home/sistemas/farmaclinic/frontend) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  cp -f .env.production.internal.example .env.production) Tj
+0 -14 Td
+(  npm run build) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([RUN IN] /home/sistemas/farmaclinic) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+() Tj
+0 -14 Td
+([COMANDO]) Tj
+0 -14 Td
+(  sudo systemctl restart farmaclinic-api) Tj
+0 -14 Td
+(  docker restart farmaclinic-web) Tj
+0 -14 Td
+(  curl http://127.0.0.1:4100/api/health) Tj
+0 -14 Td
+(  curl http://127.0.0.1:8081/farmaclinic/api/health) Tj
+ET
+endstream
+endobj
+16 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 17 0 R >>
+endobj
+17 0 obj
+<< /Length 32 >>
+stream
+BT
+/F1 11 Tf
+50 742 Td
+() Tj
+ET
+endstream
+endobj
+xref
+0 18
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000163 00000 n 
+0000000233 00000 n 
+0000000359 00000 n 
+0000002254 00000 n 
+0000002380 00000 n 
+0000003976 00000 n 
+0000004102 00000 n 
+0000005731 00000 n 
+0000005859 00000 n 
+0000007575 00000 n 
+0000007703 00000 n 
+0000009214 00000 n 
+0000009342 00000 n 
+0000010996 00000 n 
+0000011124 00000 n 
+trailer
+<< /Size 18 /Root 1 0 R >>
+startxref
+11206
+%%EOF

@@ -10,7 +10,7 @@ Group=sistemas
 WorkingDirectory=/home/sistemas/farmaclinic/backend
 Environment=NODE_ENV=production
 EnvironmentFile=/home/sistemas/farmaclinic/backend/.env.internal
-ExecStart=/usr/bin/node src/server.js
+ExecStart=/home/sistemas/.nvm/versions/node/v20.20.2/bin/node src/server.js
 Restart=always
 RestartSec=3
 
