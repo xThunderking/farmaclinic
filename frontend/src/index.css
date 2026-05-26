@@ -264,6 +264,22 @@ body {
     background: #f8fafc;
   }
 
+  .print-table tbody tr.print-row-high-risk td {
+    background: #fff1f2 !important;
+  }
+
+  .print-table tbody tr.print-row-high-risk td:first-child {
+    border-left: 6px solid #dc2626;
+  }
+
+  .print-table tbody tr.print-row-antibiotic td {
+    background: #fffbeb !important;
+  }
+
+  .print-table tbody tr.print-row-antibiotic td:first-child {
+    border-left: 6px solid #f59e0b;
+  }
+
   .print-empty {
     margin: 0;
     border: 1px dashed #cbd5e1;

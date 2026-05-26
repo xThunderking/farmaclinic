@@ -33,7 +33,7 @@ const kvRows = (entries = [], formatExcelDate) => entries
     Valor: formatPrintValue(entry.keyName || entry.label, entry.value, formatExcelDate),
   }));
 
-function TableBlock({ title, columns = [], rows = [] }) {
+function TableBlock({ title, columns = [], rows = [], getRowClass }) {
   if (!rows.length) return null;
 
   return (
@@ -47,7 +47,7 @@ function TableBlock({ title, columns = [], rows = [] }) {
         </thead>
         <tbody>
           {rows.map((row, idx) => (
-            <tr key={`${title}-r-${idx}`}>
+            <tr key={`${title}-r-${idx}`} className={getRowClass ? getRowClass(row, idx) : ''}>
               {columns.map((col) => (
                 <td key={`${title}-${idx}-${col}`}>{hasMeaningfulValue(row[col]) ? String(row[col]) : '-'}</td>
               ))}
@@ -75,6 +75,7 @@ export default function PrintPatientReport({
   patient,
   calculateAge,
   calculateDaysOfUse,
+  calculateCrCl,
   preguntasEntrevista = [],
   formatExcelDate,
 }) {
@@ -85,6 +86,12 @@ export default function PrintPatientReport({
   const interview = patient.interview || {};
   const ageData = typeof calculateAge === 'function' ? calculateAge(d.fechaNacimiento) : { years: '', group: '' };
   const diasEstancia = typeof calculateDaysOfUse === 'function' ? calculateDaysOfUse(d.ingreso, d.egreso) : '';
+  const creatData = patient.labs?.['Creatinina Sérica'] || [];
+  const latestCreatEntry = creatData.length > 0 ? creatData[creatData.length - 1] : null;
+  const latestCreat = latestCreatEntry?.value;
+  const tfgEst = typeof calculateCrCl === 'function'
+    ? calculateCrCl(ageData?.years, d.peso, d.genero, latestCreat)
+    : '';
 
   const now = new Date();
 
@@ -94,6 +101,7 @@ export default function PrintPatientReport({
       Expediente: formatPrintValue('numeroPaciente', d.numeroPaciente, formatExcelDate) || '-',
       Episodio: formatPrintValue('numeroEpisodio', d.numeroEpisodio, formatExcelDate) || '-',
       Habitacion: formatPrintValue('habitacion', d.habitacion, formatExcelDate) || '-',
+      'Fecha nac.': formatPrintValue('fechaNacimiento', d.fechaNacimiento, formatExcelDate) || '-',
       Edad: hasMeaningfulValue(ageData?.years) ? `${ageData.years} anos${ageData.group ? ` (${ageData.group})` : ''}` : '-',
       Estancia: hasMeaningfulValue(diasEstancia) ? `${diasEstancia} dias` : '-',
       Farmacos: `${(patient.perfilFarmaco || []).length}`,
@@ -134,6 +142,28 @@ export default function PrintPatientReport({
 
   const entrevistaRows = kvRows((preguntasEntrevista || []).map((q) => ({ label: q.text, keyName: q.id, value: interview[q.id] })), formatExcelDate);
 
+  const conciliacionIngresoRows = (conc.ingreso || []).map((item) => ({
+    Principio: item.principio,
+    'Marca Com.': item.marcaComercial,
+    Dosis: item.dosis,
+    Via: item.via,
+    'Desde cuando': item.desdeCuando,
+    'Ultima toma': formatPrintValue('ultimaTomaMedicamento', item.ultimaTomaMedicamento, formatExcelDate),
+    Estado: item.activo,
+    Observaciones: item.observacion,
+  })).filter((row) => Object.values(row).some(hasMeaningfulValue));
+
+  const conciliacionEgresoRows = (conc.egreso || []).map((item) => ({
+    Principio: item.principio,
+    'Marca Com.': item.marcaComercial,
+    Dosis: item.dosis,
+    Frecuencia: item.frecuencia,
+    Via: item.via,
+    'Dias tratm.': item.diasTratamiento,
+    'Sabe uso': item.sabeParaQue,
+    Observaciones: item.observacion,
+  })).filter((row) => Object.values(row).some(hasMeaningfulValue));
+
   const conciliacionEstadoRows = [
     {
       Ingreso: conc.ingresoNA ? 'No aplica' : (conc.ingreso || []).length > 0 ? 'Realizada' : 'Pendiente',
@@ -142,6 +172,12 @@ export default function PrintPatientReport({
       Egreso: conc.egresoNA ? 'No aplica' : (conc.egreso || []).length > 0 ? 'Realizada' : 'Pendiente',
     },
   ];
+
+  const normalizeCategory = (value = '') => String(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
 
   const perfilRows = (patient.perfilFarmaco || []).map((item) => ({
     Categoria: item.categoria,
@@ -152,7 +188,14 @@ export default function PrintPatientReport({
     Inicio: formatPrintValue('fechaInicio', item.fechaInicio, formatExcelDate),
     Estado: item.estado,
     Idoneidad: item.idoneidad,
+    _categoriaNormalized: normalizeCategory(item.categoria),
   })).filter((row) => Object.values(row).some(hasMeaningfulValue));
+
+  const getPerfilRowClass = (row) => {
+    if (row._categoriaNormalized === 'alto riesgo') return 'print-row-high-risk';
+    if (row._categoriaNormalized === 'antibiotico') return 'print-row-antibiotic';
+    return '';
+  };
 
   const solucionesRows = (patient.solucionesIV || []).map((item) => ({
     Solucion: item.solucion,
@@ -191,13 +234,22 @@ export default function PrintPatientReport({
     'Que se hizo': item.queSeHizo,
   })).filter((row) => Object.values(row).some(hasMeaningfulValue));
 
-  const labsRows = Object.entries(patient.labs || {}).flatMap(([param, rows]) =>
+  const tfgRow = tfgEst ? [{
+    Parametro: 'TFG Est. (Cockcroft-Gault)',
+    Fecha: formatPrintValue('date', latestCreatEntry?.date, formatExcelDate),
+    Valor: `${tfgEst} mL/min`,
+  }] : [];
+
+  const labsRows = [
+    ...tfgRow,
+    ...Object.entries(patient.labs || {}).flatMap(([param, rows]) =>
     (rows || []).filter((row) => hasMeaningfulValue(row?.date) || hasMeaningfulValue(row?.value)).map((row) => ({
       Parametro: param,
       Fecha: formatPrintValue('date', row.date, formatExcelDate),
       Valor: row.value,
     })),
-  );
+    ),
+  ];
 
   const microRows = (patient.microbiologia || []).map((item) => ({
     'Fecha muestra': formatPrintValue('fechaMuestra', item.fechaMuestra, formatExcelDate),
@@ -229,7 +281,7 @@ export default function PrintPatientReport({
         <div className="print-header-bottom">
           <TableBlock
             title="Resumen del caso"
-            columns={['Paciente', 'Expediente', 'Episodio', 'Habitacion', 'Edad', 'Estancia', 'Farmacos', 'PRM', 'Interacciones']}
+            columns={['Paciente', 'Expediente', 'Episodio', 'Habitacion', 'Fecha nac.', 'Edad', 'Estancia', 'Farmacos', 'PRM', 'Interacciones']}
             rows={resumenRows}
           />
         </div>
@@ -238,10 +290,10 @@ export default function PrintPatientReport({
       <Section number="01" title="Datos generales y contexto">
         <div className="print-two-col">
           <TableBlock title="Identificacion" columns={['Campo', 'Valor']} rows={identificacionRows} />
-          <TableBlock title="Contexto clinico" columns={['Campo', 'Valor']} rows={clinicoRows} />
+          <TableBlock title="Antropometria y riesgos" columns={['Campo', 'Valor']} rows={antropometriaRows} />
         </div>
         <div className="mt-3">
-          <TableBlock title="Antropometria y riesgos" columns={['Campo', 'Valor']} rows={antropometriaRows} />
+          <TableBlock title="Contexto clinico" columns={['Campo', 'Valor']} rows={clinicoRows} />
         </div>
       </Section>
 
@@ -251,6 +303,18 @@ export default function PrintPatientReport({
           columns={['Ingreso', 'Transicion Area', 'Transicion Medico', 'Egreso']}
           rows={conciliacionEstadoRows}
         />
+        <div className="mt-3 space-y-3">
+          <TableBlock
+            title="Farmacos conciliacion al ingreso"
+            columns={['Principio', 'Marca Com.', 'Dosis', 'Via', 'Desde cuando', 'Ultima toma', 'Estado', 'Observaciones']}
+            rows={conciliacionIngresoRows}
+          />
+          <TableBlock
+            title="Farmacos conciliacion al egreso"
+            columns={['Principio', 'Marca Com.', 'Dosis', 'Frecuencia', 'Via', 'Dias tratm.', 'Sabe uso', 'Observaciones']}
+            rows={conciliacionEgresoRows}
+          />
+        </div>
         <div className="mt-3">
           <TableBlock title="Entrevista de conciliacion" columns={['Campo', 'Valor']} rows={entrevistaRows} />
         </div>
@@ -261,6 +325,7 @@ export default function PrintPatientReport({
           title="Perfil farmacoterapeutico"
           columns={['Categoria', 'Principio', 'Dosis', 'Via', 'Frecuencia', 'Inicio', 'Estado', 'Idoneidad']}
           rows={perfilRows}
+          getRowClass={getPerfilRowClass}
         />
         <div className="mt-3">
           <TableBlock

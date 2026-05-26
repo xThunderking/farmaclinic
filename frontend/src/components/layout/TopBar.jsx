@@ -58,6 +58,22 @@ export default function TopBar({
         </div>
       </div>
       <div className="flex items-center space-x-2 sm:space-x-6 text-sm shrink-0">
+        {isPatientView && onSaveChanges && (
+          <button
+            onClick={onSaveChanges}
+            disabled={saveDisabled}
+            className={`inline-flex lg:hidden items-center gap-1.5 px-2 py-2 rounded-lg text-xs font-semibold border transition-colors ${
+              saveDisabled
+                ? 'bg-blue-900/40 text-blue-300 border-blue-900/70 cursor-not-allowed'
+                : 'bg-blue-600 text-white border-blue-500 hover:bg-blue-500'
+            }`}
+            title={saveLoading ? 'Guardando cambios...' : 'Guardar cambios'}
+            aria-label={saveLoading ? 'Guardando cambios' : 'Guardar cambios'}
+          >
+            <Save className={`w-3.5 h-3.5 ${saveLoading ? 'animate-pulse' : ''}`} />
+            <span className="hidden sm:inline">{saveLoading ? 'Guardando...' : 'Guardar'}</span>
+          </button>
+        )}
         <div className="hidden lg:flex lg:items-center lg:gap-3">
           {isPatientView && onSaveChanges && (
             <button
@@ -109,24 +125,33 @@ export default function TopBar({
                 ) : (
                   <div className="max-h-[26rem] overflow-auto p-3 space-y-2 bg-slate-50/70">
                     {notifications.map((notification) => (
+                      (() => {
+                        const isCritical = notification.severity === 'critical';
+                        const isInfo = notification.severity === 'info';
+                        const containerClass = isCritical
+                          ? 'border-red-200 bg-red-50/70'
+                          : isInfo
+                            ? 'border-blue-200 bg-blue-50/70'
+                            : 'border-amber-200 bg-amber-50/70';
+                        const badgeClass = isCritical
+                          ? 'bg-red-100 text-red-700 border border-red-200'
+                          : isInfo
+                            ? 'bg-blue-100 text-blue-700 border border-blue-200'
+                            : 'bg-amber-100 text-amber-700 border border-amber-200';
+                        const badgeLabel = isCritical ? 'CRITICA' : isInfo ? 'INFO' : 'ATENCION';
+                        const openLabel = notification.type === 'recordatorio' ? 'Revisar paciente' : 'Abrir paciente';
+
+                        return (
                       <article
                         key={notification.id}
-                        className={`rounded-xl border p-3 shadow-sm transition-colors ${
-                          notification.severity === 'critical'
-                            ? 'border-red-200 bg-red-50/70'
-                            : 'border-amber-200 bg-amber-50/70'
-                        }`}
+                        className={`rounded-xl border p-3 shadow-sm transition-colors ${containerClass}`}
                       >
                         <div className="flex items-center justify-between gap-2">
                           <p className="text-sm font-semibold text-slate-900">{notification.title}</p>
                           <span
-                            className={`text-[10px] px-2 py-0.5 rounded-full font-extrabold tracking-wide ${
-                              notification.severity === 'critical'
-                                ? 'bg-red-100 text-red-700 border border-red-200'
-                                : 'bg-amber-100 text-amber-700 border border-amber-200'
-                            }`}
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-extrabold tracking-wide ${badgeClass}`}
                           >
-                            {notification.severity === 'critical' ? 'CRITICA' : 'ATENCION'}
+                            {badgeLabel}
                           </span>
                         </div>
                         <p className="text-xs text-slate-500 mt-1">{notification.patientName}</p>
@@ -139,7 +164,7 @@ export default function TopBar({
                             }}
                             className="text-xs font-semibold px-2.5 py-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
                           >
-                            Abrir paciente
+                            {openLabel}
                           </button>
                           {(notification.type === 'idle' || notification.type === 'antibiotico') && (
                             <button
@@ -151,6 +176,8 @@ export default function TopBar({
                           )}
                         </div>
                       </article>
+                        );
+                      })()
                     ))}
                   </div>
                 )}

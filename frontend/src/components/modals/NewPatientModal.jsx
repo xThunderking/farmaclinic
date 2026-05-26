@@ -2,6 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, History, Layers, UserPlus, X } from 'lucide-react';
 import { FormInput } from '../common/FormControls';
 
+const normalizePatientName = (value = '') => String(value)
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/\s+/g, ' ')
+  .trim();
+
 export default function NewPatientModal({ patients, onClose, onCreateNew, onCreateReingreso, formatExcelDate }) {
   const [formData, setFormData] = useState(() => {
     const currentDateLocal = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000)
@@ -10,6 +17,7 @@ export default function NewPatientModal({ patients, onClose, onCreateNew, onCrea
     return {
       nombre: '',
       fechaNacimiento: '',
+      habitacion: '',
       numeroPaciente: '',
       identificadorInterno: '',
       fechaIngreso: currentDateLocal,
@@ -52,8 +60,8 @@ export default function NewPatientModal({ patients, onClose, onCreateNew, onCrea
     return patients.find((p) => {
       if (p.deleted) return false;
 
-      const incomingName = (formData.nombre || '').trim().toLowerCase();
-      const existingName = (p.demographics.nombre || '').trim().toLowerCase();
+      const incomingName = normalizePatientName(formData.nombre);
+      const existingName = normalizePatientName(p.demographics.nombre);
       const sameName = incomingName.length > 3 && existingName.length > 3 && incomingName === existingName;
 
       const hasDob = p.demographics.fechaNacimiento && formData.fechaNacimiento;
@@ -105,6 +113,13 @@ export default function NewPatientModal({ patients, onClose, onCreateNew, onCrea
             type="datetime-local"
             value={formData.fechaIngreso}
             onChange={(e) => setFormData({ ...formData, fechaIngreso: e.target.value })}
+          />
+
+          <FormInput
+            label="Habitación"
+            value={formData.habitacion}
+            onChange={(e) => setFormData({ ...formData, habitacion: e.target.value })}
+            placeholder="Ej. 401-B"
           />
 
           <div className="grid grid-cols-2 gap-4">

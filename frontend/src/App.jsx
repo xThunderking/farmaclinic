@@ -17,8 +17,8 @@ import LoginScreen from './views/LoginScreen';
 import { createPatientTabComponents } from './views/patient/PatientTabs';
 
 // --- Constantes y Listas ---
-const PRESENTACIONES = ["Amp", "Fam", "Fco", "Cap", "Tab", "Sup", "Susp", "SL", "Jer Prell", "Pch", "Ovu"];
-const VIAS = ["IV", "IM", "VO", "SC", "Rectal", "Inh", "Tópica", "Oftálmica", "Ótica", "Vaginal", "SNG", "Nasal", "SL"];
+const PRESENTACIONES = ["Amp", "Fam", "Fco", "Cap", "Tab", "Sup", "Susp", "SL", "Jer Prell", "Pch", "Ovu", "Sob"];
+const VIAS = ["IV", "IM", "VO", "SC", "Rectal", "Inh", "Tópica", "Transdermico", "Oftálmica", "Ótica", "Vaginal", "SNG", "Nasal", "SL"];
 const CATEGORIAS_FARMACO = ["General", "Antibiótico", "Alto Riesgo"];
 const IDONEIDAD_OPCIONES = ["Pendiente", "Idóneo", "No Idóneo"];
 const CATEGORIAS_PRM = ["Dispensación", "Prescripción", "Transcripción", "Preparación", "Administración"];
@@ -174,6 +174,19 @@ const resolveApiBase = async () => {
 const SESSION_USER_KEY = 'farmaclinic_current_user';
 const CLIENT_ID_KEY = 'farmaclinic_client_id';
 const SYNC_PENDING_PATIENTS_KEY = 'farmaclinic_pending_patient_sync';
+const DILUTIONS_STORAGE_KEY = 'farmaclinic_dilutions_table';
+const DEFAULT_DILUTIONS_COLUMNS = [
+  'MEDICAMENTO',
+  'MARCA COMERCIAL',
+  'PRESENTACION',
+  'RECONSTITUCION',
+  'INTRAMUSCULAR',
+  'ADMINISTRACION',
+  'SOLUCIONES COMPATIBLES',
+  'TIEMPO DE INFUSION',
+  'SEGURIDAD',
+  'TIEMPO DE ESTABILIDAD',
+];
 const UNSAVED_CHANGES_BEFOREUNLOAD_MSG = 'Hay cambios pendientes. Si recargas la pagina, se perderan los datos no guardados.';
 const SYNC_RETRY_MS = 3000;
 const APP_VERSION = 'FARMA 1.4';
@@ -209,6 +222,60 @@ const safeStorageRemove = (key) => {
   } catch {
     // ignore storage remove errors
   }
+};
+
+const normalizeDilutionsTable = (table = {}) => {
+  const incomingColumns = Array.isArray(table?.columns) ? table.columns : [];
+  const columns = DEFAULT_DILUTIONS_COLUMNS;
+  const hasLegacySchemaWithoutAdministracion = incomingColumns.length === DEFAULT_DILUTIONS_COLUMNS.length - 1;
+  const rows = Array.isArray(table?.rows) ? table.rows : [];
+
+  const normalizedRows = rows.map((row, index) => {
+    const normalizedRow = {
+      id: row?.id || `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 6)}`,
+    };
+
+    columns.forEach((column, colIndex) => {
+      const isAdministracionColumn = column === 'ADMINISTRACION';
+      const legacyIndex = hasLegacySchemaWithoutAdministracion && colIndex > 5 ? colIndex - 1 : colIndex;
+      const legacyColumn = String(incomingColumns[legacyIndex] || '').trim();
+      const directValue = row?.[column];
+      const legacyValue = isAdministracionColumn && hasLegacySchemaWithoutAdministracion
+        ? ''
+        : (legacyColumn ? row?.[legacyColumn] : undefined);
+      normalizedRow[column] = directValue ?? legacyValue ?? '';
+    });
+
+    return normalizedRow;
+  });
+
+  return {
+    columns,
+    rows: normalizedRows,
+    sheetName: String(table?.sheetName || ''),
+    updatedAt: Number(table?.updatedAt || 0),
+  };
+};
+
+const getStoredDilutionsTable = () => {
+  const raw = safeStorageGet(DILUTIONS_STORAGE_KEY);
+  if (!raw) return normalizeDilutionsTable();
+
+  try {
+    const parsed = JSON.parse(raw);
+    return normalizeDilutionsTable(parsed);
+  } catch {
+    return normalizeDilutionsTable();
+  }
+};
+
+const setStoredDilutionsTable = (table = {}) => {
+  const normalized = normalizeDilutionsTable(table);
+  if (!normalized.columns.length && !normalized.rows.length) {
+    safeStorageRemove(DILUTIONS_STORAGE_KEY);
+    return;
+  }
+  safeStorageSet(DILUTIONS_STORAGE_KEY, JSON.stringify(normalized));
 };
 
 const getStoredPendingPatientSync = () => {
@@ -540,6 +607,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(() => getStoredSessionUser());
 
   const [patients, setPatients] = useState(initialPatients);
+  const [dilutionsTable, setDilutionsTable] = useState(() => getStoredDilutionsTable());
   const [activePatientId, setActivePatientId] = useState(null);
   const [activeTab, setActiveTab] = useState('demographics');
   const [viewingAdmin, setViewingAdmin] = useState(false);
@@ -568,9 +636,109 @@ export default function App() {
   const previousPatientsRef = useRef(initialPatients);
   const latestPatientsRef = useRef(initialPatients);
   const pendingPatientSyncRef = useRef(getStoredPendingPatientSync());
+  const shownReminderNotificationsRef = useRef(new Set());
+  const reminderPermissionAskedRef = useRef(false);
   const confirmResolverRef = useRef(null);
   const allowImmediateReloadRef = useRef(false);
   const [notificationNow, setNotificationNow] = useState(Date.now());
+
+  const handleDilutionsTableChange = useCallback((nextTable) => {
+    setDilutionsTable((prev) => {
+      const resolved = typeof nextTable === 'function' ? nextTable(prev) : nextTable;
+      return normalizeDilutionsTable(resolved);
+    });
+  }, []);
+
+  const createReminderForPatient = useCallback((payload = {}) => {
+    const patientId = String(payload.patientId || '');
+    const date = String(payload.date || '').trim();
+    const time = String(payload.time || '').trim();
+    const description = String(payload.description || '').trim();
+    const importanceRaw = String(payload.importance || '').toLowerCase();
+    const importance = ['baja', 'media', 'alta'].includes(importanceRaw) ? importanceRaw : 'media';
+
+    if (!patientId) return { ok: false, message: 'Selecciona un paciente activo.' };
+    if (!date || !time) return { ok: false, message: 'Completa fecha y hora del recordatorio.' };
+    if (!description) return { ok: false, message: 'Agrega una descripción del recordatorio.' };
+
+    const dueAtTs = new Date(`${date}T${time}`).getTime();
+    if (!Number.isFinite(dueAtTs) || dueAtTs <= 0) {
+      return { ok: false, message: 'La fecha y hora del recordatorio no son válidas.' };
+    }
+
+    const targetPatient = (patients || []).find((patient) => patient.id === patientId);
+    if (!targetPatient || targetPatient.deleted || targetPatient.demographics?.egreso) {
+      return { ok: false, message: 'Solo se pueden crear recordatorios en pacientes activos.' };
+    }
+
+    const now = Date.now();
+    const createdByName = currentUser?.nombre || currentUser?.username || 'Usuario';
+    const reminder = {
+      id: `rem-${now}-${Math.random().toString(36).slice(2, 8)}`,
+      dueAt: new Date(dueAtTs).toISOString(),
+      importance,
+      status: 'pendiente',
+      description,
+      createdAt: new Date(now).toISOString(),
+      createdByUserId: currentUser?.id || '',
+      createdByName,
+      reviewedByUserId: '',
+      reviewedBy: '',
+      reviewedByName: '',
+      reviewedAt: '',
+    };
+
+    setPatients((prev) => prev.map((patient) => {
+      if (patient.id !== patientId) return patient;
+
+      return {
+        ...patient,
+        reminders: [...(Array.isArray(patient.reminders) ? patient.reminders : []), reminder],
+        lastChangedAt: now,
+      };
+    }));
+
+    return { ok: true };
+  }, [patients, currentUser]);
+
+  const markReminderReviewed = useCallback((patientId, reminderId, reviewer = {}) => {
+    if (!patientId || !reminderId) return false;
+
+    const now = Date.now();
+    const reviewerId = reviewer.userId || currentUser?.id || '';
+    const reviewerName = reviewer.userName || currentUser?.nombre || currentUser?.username || 'Usuario';
+    let changed = false;
+
+    setPatients((prev) => prev.map((patient) => {
+      if (patient.id !== patientId) return patient;
+
+      const currentReminders = Array.isArray(patient.reminders) ? patient.reminders : [];
+      const nextReminders = currentReminders.map((reminder) => {
+        if (reminder.id !== reminderId) return reminder;
+        if (reminder.status === 'finalizado' || reminder.reviewedByName || reminder.reviewedBy) return reminder;
+
+        changed = true;
+        return {
+          ...reminder,
+          status: 'finalizado',
+          reviewedByUserId: reviewerId,
+          reviewedBy: reviewerName,
+          reviewedByName: reviewerName,
+          reviewedAt: new Date(now).toISOString(),
+        };
+      });
+
+      if (!changed) return patient;
+      return {
+        ...patient,
+        reminders: nextReminders,
+        lastReviewedAt: now,
+        lastChangedAt: now,
+      };
+    }));
+
+    return changed;
+  }, [currentUser]);
 
   const openLockModal = useCallback((title, message, variant = 'lock') => {
     setLockModal({ open: true, title, message, variant });
@@ -733,6 +901,10 @@ export default function App() {
     }
     safeStorageSet(SESSION_USER_KEY, JSON.stringify(currentUser));
   }, [currentUser]);
+
+  useEffect(() => {
+    setStoredDilutionsTable(dilutionsTable);
+  }, [dilutionsTable]);
 
   useEffect(() => {
     if (bootstrapping || !currentUser) return;
@@ -1232,10 +1404,7 @@ export default function App() {
       }
 
       const now = Date.now();
-      const selectedUpdated = {
-        ...touchPresenceInPatient(p, currentUser.id, now),
-        lastReviewedAt: now,
-      };
+      let selectedUpdated = null;
 
       setPatients((prev) => {
         let changed = false;
@@ -1247,7 +1416,11 @@ export default function App() {
           }
 
           if (patient.id === id) {
-            updated = selectedUpdated;
+            updated = {
+              ...touchPresenceInPatient(patient, currentUser.id, now),
+              lastReviewedAt: now,
+            };
+            selectedUpdated = updated;
           }
 
           if (updated !== patient) changed = true;
@@ -1256,6 +1429,13 @@ export default function App() {
 
         return changed ? next : prev;
       });
+
+      if (!selectedUpdated) {
+        selectedUpdated = {
+          ...touchPresenceInPatient(p, currentUser.id, now),
+          lastReviewedAt: now,
+        };
+      }
 
       setDraftPatient(selectedUpdated);
       setDraftDirty(false);
@@ -1282,6 +1462,34 @@ export default function App() {
     const now = Date.now();
     setPatients((prev) => prev.map((p) => (p.id === patientId ? { ...p, lastReviewedAt: now } : p)));
   };
+
+  const activePatientReminders = useMemo(() => {
+    const rows = [];
+
+    (patients || []).forEach((patient) => {
+      if (patient.deleted || patient.demographics?.egreso) return;
+
+      const patientReminders = Array.isArray(patient.reminders) ? patient.reminders : [];
+      patientReminders.forEach((reminder) => {
+        rows.push({
+          ...reminder,
+          patientId: patient.id,
+          patientName: patient.demographics?.nombre || 'Paciente sin nombre',
+          patientRoom: patient.demographics?.habitacion || '-',
+        });
+      });
+    });
+
+    return rows.sort((a, b) => {
+      const aReviewed = a.status === 'finalizado' || a.reviewedByName || a.reviewedBy ? 1 : 0;
+      const bReviewed = b.status === 'finalizado' || b.reviewedByName || b.reviewedBy ? 1 : 0;
+      if (aReviewed !== bReviewed) return aReviewed - bReviewed;
+
+      const aDueTs = new Date(a.dueAt || 0).getTime();
+      const bDueTs = new Date(b.dueAt || 0).getTime();
+      return aDueTs - bDueTs;
+    });
+  }, [patients]);
 
   const notifications = useMemo(() => {
     const staleThresholdMs = NOTIF_SIN_CAMBIOS_HORAS * 60 * 60 * 1000;
@@ -1324,38 +1532,82 @@ export default function App() {
       if (maxDiasAtb >= NOTIF_ANTIBIOTICO_DIAS) {
         const seenAtbDays = Number(patient.atbAlertSeenDays || 0);
         const wasSeenForCurrentOrHigherDays = seenAtbDays >= maxDiasAtb;
-        if (wasSeenForCurrentOrHigherDays) return;
+        if (!wasSeenForCurrentOrHigherDays) {
+          result.push({
+            id: `atb-${patient.id}`,
+            type: 'antibiotico',
+            patientId: patient.id,
+            patientName: patient.demographics?.nombre || 'Paciente sin nombre',
+            title: 'Antibiótico prolongado',
+            message: `El paciente acumula ${maxDiasAtb} días con antibiótico activo.`,
+            atbDays: maxDiasAtb,
+            severity: 'critical',
+            sortValue: maxDiasAtb,
+          });
+        }
+      }
+
+      (Array.isArray(patient.reminders) ? patient.reminders : []).forEach((reminder) => {
+        const wasReviewed = reminder.status === 'finalizado' || Boolean(reminder.reviewedByName || reminder.reviewedBy);
+        if (wasReviewed) return;
+
+        const dueTs = new Date(reminder.dueAt || 0).getTime();
+        if (!Number.isFinite(dueTs) || dueTs <= 0) return;
+        if (dueTs > notificationNow) return;
+
+        const importance = String(reminder.importance || 'media').toLowerCase();
+        const severity = importance === 'alta' ? 'critical' : importance === 'baja' ? 'info' : 'warning';
+        const dueLabel = formatExcelDate(reminder.dueAt) || new Date(dueTs).toLocaleString();
 
         result.push({
-          id: `atb-${patient.id}`,
-          type: 'antibiotico',
+          id: `reminder-${patient.id}-${reminder.id}`,
+          type: 'recordatorio',
+          reminderId: reminder.id,
           patientId: patient.id,
           patientName: patient.demographics?.nombre || 'Paciente sin nombre',
-          title: 'Antibiótico prolongado',
-          message: `El paciente acumula ${maxDiasAtb} días con antibiótico activo.`,
-          atbDays: maxDiasAtb,
-          severity: 'critical',
-          sortValue: maxDiasAtb,
+          title: 'Recordatorio programado',
+          message: `${reminder.description || 'Sin descripción'} | Programado: ${dueLabel}`,
+          severity,
+          importance,
+          sortValue: notificationNow - dueTs,
         });
-      }
+      });
     });
 
-    const priority = { critical: 2, warning: 1 };
+    const priority = { critical: 3, warning: 2, info: 1 };
     return result.sort((a, b) => {
       const severityDiff = (priority[b.severity] || 0) - (priority[a.severity] || 0);
       if (severityDiff !== 0) return severityDiff;
       return (b.sortValue || 0) - (a.sortValue || 0);
     });
-  }, [patients, notificationNow]);
+  }, [patients, notificationNow, formatExcelDate]);
 
   const handleNotificationOpen = (notification) => {
     if (!notification?.patientId) return;
+
+    if (notification.type === 'recordatorio') {
+      markReminderReviewed(notification.patientId, notification.reminderId, {
+        userId: currentUser?.id,
+        userName: currentUser?.nombre || currentUser?.username || 'Usuario',
+      });
+      handleEnterPatient(notification.patientId, 'demographics');
+      return;
+    }
+
     const targetTab = notification.type === 'antibiotico' ? 'pharmacotherapy' : 'demographics';
     handleEnterPatient(notification.patientId, targetTab);
   };
 
   const handleNotificationMarkReviewed = (notification) => {
     if (!notification?.patientId) return;
+
+    if (notification.type === 'recordatorio') {
+      markReminderReviewed(notification.patientId, notification.reminderId, {
+        userId: currentUser?.id,
+        userName: currentUser?.nombre || currentUser?.username || 'Usuario',
+      });
+      return;
+    }
 
     if (notification.type === 'antibiotico') {
       const atbDays = Number(notification.atbDays || 0);
@@ -1369,6 +1621,47 @@ export default function App() {
 
     markPatientReviewed(notification.patientId);
   };
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof Notification === 'undefined') return;
+
+    const dueReminderNotifications = notifications.filter((item) => item.type === 'recordatorio');
+    const dueIds = new Set(dueReminderNotifications.map((item) => item.id));
+
+    shownReminderNotificationsRef.current.forEach((id) => {
+      if (!dueIds.has(id)) shownReminderNotificationsRef.current.delete(id);
+    });
+
+    if (!dueReminderNotifications.length) return;
+
+    if (Notification.permission === 'default' && !reminderPermissionAskedRef.current) {
+      reminderPermissionAskedRef.current = true;
+      void Notification.requestPermission().catch(() => {});
+    }
+
+    if (Notification.permission !== 'granted') return;
+
+    dueReminderNotifications.forEach((notification) => {
+      if (shownReminderNotificationsRef.current.has(notification.id)) return;
+      shownReminderNotificationsRef.current.add(notification.id);
+
+      try {
+        const desktopNotification = new Notification(`Recordatorio: ${notification.patientName}`, {
+          body: notification.message,
+          tag: notification.id,
+          requireInteraction: notification.severity === 'critical',
+        });
+
+        desktopNotification.onclick = () => {
+          if (typeof window !== 'undefined') window.focus();
+          handleNotificationOpen(notification);
+          desktopNotification.close();
+        };
+      } catch {
+        // ignore system-notification errors on unsupported environments
+      }
+    });
+  }, [notifications, handleNotificationOpen]);
 
   const handleLoginAttempt = useCallback(async ({ username, password }) => {
     try {
@@ -1466,10 +1759,10 @@ export default function App() {
       lastReviewedAt: now,
       activeUsers: [currentUser.id], // Ingresamos directamente como activos
       activeUsersLastSeen: { [currentUser.id]: now },
-      demographics: { identificadorInterno: internalIdFinal, numeroPaciente: initialData.numeroPaciente || '', numeroEpisodio: '', nombre: initialData.nombre || '', fechaNacimiento: initialData.fechaNacimiento || '', peso: '', altura: '', ingreso: ingresoFinal, egreso: '', tipoPaciente: '', especialidad: '', embarazada: '', semanasGestacion: '', toxicomania: '', alcoholismo: '', comorbilidades: '', comorbilidadesTipo: '', observacionesGenerales: '' },
+      demographics: { identificadorInterno: internalIdFinal, numeroPaciente: initialData.numeroPaciente || '', numeroEpisodio: '', habitacion: initialData.habitacion || '', nombre: initialData.nombre || '', fechaNacimiento: initialData.fechaNacimiento || '', peso: '', altura: '', ingreso: ingresoFinal, egreso: '', tipoPaciente: '', especialidad: '', embarazada: '', semanasGestacion: '', toxicomania: '', alcoholismo: '', comorbilidades: '', comorbilidadesTipo: '', observacionesGenerales: '' },
       labs: {}, interview: {}, conciliacion: { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false }, 
       perfilFarmacoMeta: { evaluadoPrevioPrimeraDosis: false },
-      perfilFarmaco: [], solucionesIV: [], prms: [], interacciones: [], ram: [], microbiologia: []
+      perfilFarmaco: [], solucionesIV: [], prms: [], interacciones: [], ram: [], microbiologia: [], reminders: []
     };
     setPatients([...patients, newPatient]);
     setActivePatientId(newId);
@@ -1501,7 +1794,7 @@ export default function App() {
             egreso: '',
             motivoIngreso: '',
             diagnosticoPrincipal: '',
-            habitacion: '',
+            habitacion: initialData.habitacion || '',
             medico: '',
             tipoPaciente: '',
             especialidad: '',
@@ -1511,7 +1804,7 @@ export default function App() {
         },
         labs: {}, interview: {}, conciliacion: { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false },
         perfilFarmacoMeta: { evaluadoPrevioPrimeraDosis: false },
-        perfilFarmaco: [], solucionesIV: [], prms: [], interacciones: [], ram: [], microbiologia: []
+        perfilFarmaco: [], solucionesIV: [], prms: [], interacciones: [], ram: [], microbiologia: [], reminders: []
     };
     setPatients([...patients, newReingreso]);
     setActivePatientId(newReingreso.id);
@@ -1573,6 +1866,10 @@ export default function App() {
         {syncError && <div className="mx-8 mt-4 bg-amber-50 border border-amber-200 text-amber-700 px-3 py-2 rounded text-sm">{syncError}</div>}
         <Dashboard 
            patients={patients} 
+            dilutionsTable={dilutionsTable}
+            onDilutionsTableChange={handleDilutionsTableChange}
+          reminders={activePatientReminders}
+          onCreateReminder={createReminderForPatient}
            onSelect={handleEnterPatient} 
            onCreate={() => setShowNewPatientModal(true)} 
            onDelete={moveToTrash} 
@@ -1789,6 +2086,7 @@ export default function App() {
             patient={activePatientForEditing}
             calculateAge={calculateAge}
             calculateDaysOfUse={calculateDaysOfUse}
+            calculateCrCl={calculateCrCl}
             preguntasEntrevista={PREGUNTAS_ENTREVISTA}
             formatExcelDate={formatExcelDate}
           />

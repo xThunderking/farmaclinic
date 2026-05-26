@@ -40,12 +40,114 @@ export function createPatientTabComponents(deps) {
     getTfgColorClass,
   } = deps;
 
+  const TABLE_FIELD_SELECTOR = 'input:not([type="hidden"]):not([disabled]):not([readonly]), select:not([disabled]):not([readonly]), textarea:not([disabled]):not([readonly])';
+
+  const isFocusableTableField = (element) => {
+    if (!element || typeof element.matches !== 'function') return false;
+    return element.matches(TABLE_FIELD_SELECTOR);
+  };
+
+  const shouldHandleHorizontalArrow = (element, key) => {
+    const isInput = typeof HTMLInputElement !== 'undefined' && element instanceof HTMLInputElement;
+    const isTextArea = typeof HTMLTextAreaElement !== 'undefined' && element instanceof HTMLTextAreaElement;
+    if (!isInput && !isTextArea) return true;
+
+    const hasCaret = Number.isInteger(element.selectionStart) && Number.isInteger(element.selectionEnd);
+    if (!hasCaret) return true;
+
+    const start = element.selectionStart;
+    const end = element.selectionEnd;
+    const hasSelection = start !== end;
+
+    if (hasSelection) return false;
+    if (key === 'ArrowLeft') return start === 0;
+    if (key === 'ArrowRight') return end === String(element.value || '').length;
+    return true;
+  };
+
+  const findFocusableInRow = (row, preferredColIndex) => {
+    if (!row) return null;
+    const cells = Array.from(row.children || []).filter((cell) => cell.matches?.('td,th'));
+    if (cells.length === 0) return null;
+
+    const preferred = cells[preferredColIndex]?.querySelector(TABLE_FIELD_SELECTOR);
+    if (preferred) return preferred;
+
+    for (let offset = 1; offset < cells.length; offset += 1) {
+      const right = cells[preferredColIndex + offset]?.querySelector(TABLE_FIELD_SELECTOR);
+      if (right) return right;
+
+      const left = cells[preferredColIndex - offset]?.querySelector(TABLE_FIELD_SELECTOR);
+      if (left) return left;
+    }
+
+    return null;
+  };
+
+  const moveFocusWithArrows = (currentElement, key) => {
+    const currentCell = currentElement.closest('td,th');
+    const currentRow = currentCell?.closest('tr');
+    const table = currentCell?.closest('table');
+    if (!currentCell || !currentRow || !table) return null;
+
+    const rows = Array.from(table.querySelectorAll('tbody tr')).filter((row) => row.querySelector(TABLE_FIELD_SELECTOR));
+    const rowIndex = rows.indexOf(currentRow);
+    if (rowIndex < 0) return null;
+
+    const cells = Array.from(currentRow.children || []).filter((cell) => cell.matches?.('td,th'));
+    const colIndex = cells.indexOf(currentCell);
+    if (colIndex < 0) return null;
+
+    if (key === 'ArrowLeft' || key === 'ArrowRight') {
+      const step = key === 'ArrowRight' ? 1 : -1;
+      for (let col = colIndex + step; col >= 0 && col < cells.length; col += step) {
+        const candidate = cells[col].querySelector(TABLE_FIELD_SELECTOR);
+        if (candidate) return candidate;
+      }
+      return null;
+    }
+
+    if (key === 'ArrowUp' || key === 'ArrowDown') {
+      const step = key === 'ArrowDown' ? 1 : -1;
+      for (let row = rowIndex + step; row >= 0 && row < rows.length; row += step) {
+        const candidate = findFocusableInRow(rows[row], colIndex);
+        if (candidate) return candidate;
+      }
+    }
+
+    return null;
+  };
+
+  const handleTableArrowNavigation = (event) => {
+    const { key } = event;
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(key)) return;
+
+    const target = event.target;
+    if (!isFocusableTableField(target)) return;
+
+    if ((key === 'ArrowLeft' || key === 'ArrowRight') && !shouldHandleHorizontalArrow(target, key)) {
+      return;
+    }
+
+    const nextField = moveFocusWithArrows(target, key);
+    if (!nextField) return;
+
+    event.preventDefault();
+    nextField.focus();
+  };
+
 // ==========================================
 // VISTAS DEL PACIENTE (Pestañas)
 // ==========================================
 
 function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
   const d = patient.demographics;
+  const normalizePatientName = (value = '') => String(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
   const { years: edad, group: grupoEtario } = calculateAge(d.fechaNacimiento);
   const imc = calculateIMC(d.peso, d.altura);
   const sc = calculateSC(d.peso, d.altura);
@@ -124,8 +226,10 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
     const theirBase = p.pacienteBaseId || p.id;
     if (myBase === theirBase) return false;
 
-    const hasName = p.demographics.nombre && d.nombre && d.nombre.trim().length > 3;
-    const sameName = hasName && p.demographics.nombre.toLowerCase().trim() === d.nombre.toLowerCase().trim();
+    const incomingName = normalizePatientName(d.nombre);
+    const existingName = normalizePatientName(p.demographics.nombre);
+    const hasName = incomingName.length > 3 && existingName.length > 3;
+    const sameName = hasName && existingName === incomingName;
     
     const hasDob = p.demographics.fechaNacimiento && d.fechaNacimiento;
     const sameDob = hasDob && p.demographics.fechaNacimiento === d.fechaNacimiento;
@@ -598,6 +702,7 @@ function ConciliationTable({ items, type, onUpdate, onRemove }) {
 function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
   const items = patient.perfilFarmaco || [];
   const solItems = patient.solucionesIV || [];
+  const conc = patient.conciliacion || { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false };
   const meta = patient.perfilFarmacoMeta || { evaluadoPrevioPrimeraDosis: false };
   const [detailModal, setDetailModal] = useState({ open: false, type: 'pharma', itemId: '' });
   const [deleteModal, setDeleteModal] = useState({ open: false, type: 'pharma', itemId: '', label: '' });
@@ -610,7 +715,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
     [sourcePatient?.solucionesIV],
   );
 
-  const PHARMA_MODAL_FIELDS = ['presentacion', 'via', 'frecuencia', 'volumen', 'tiempo', 'velocidad', 'idoneidad', 'fechaSuspension', 'observaciones', 'prn', 'prnSituacion'];
+  const PHARMA_MODAL_FIELDS = ['presentacion', 'via', 'volumen', 'tiempo', 'velocidad', 'idoneidad', 'fechaSuspension', 'observaciones', 'prn', 'prnSituacion'];
   const PHARMA_DEFAULTS = {
     presentacion: '',
     via: '',
@@ -740,6 +845,40 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
   const removeSolucion = (id) => updatePatient({ solucionesIV: solItems.filter((item) => item.id !== id) });
   const updateMeta = (field, value) => updatePatient({ perfilFarmacoMeta: { ...meta, [field]: value } });
 
+  const duplicatePharmaToEgreso = (itemId) => {
+    const source = items.find((item) => item.id === itemId);
+    if (!source) return;
+
+    const noteParts = [
+      source.presentacion ? `Presentación: ${source.presentacion}` : '',
+      source.observaciones || '',
+      source.prn === true && source.prnSituacion ? `PRN: ${source.prnSituacion}` : '',
+    ].filter(Boolean);
+
+    const newEgresoItem = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      principio: source.principio || '',
+      marcaComercial: source.marcaComercial || '',
+      dosis: source.dosis || '',
+      frecuencia: source.frecuencia || '',
+      via: source.via || '',
+      desdeCuando: '',
+      ultimaTomaMedicamento: '',
+      activo: 'Continua',
+      diasTratamiento: '',
+      sabeParaQue: 'No',
+      observacion: noteParts.join(' | '),
+    };
+
+    updatePatient({
+      conciliacion: {
+        ...conc,
+        egresoNA: false,
+        egreso: [...(conc.egreso || []), newEgresoItem],
+      },
+    });
+  };
+
   const pendientes = items.filter((i) => !CATEGORIAS_FARMACO.includes(i.categoria));
   const atbs = items.filter((i) => i.categoria === 'Antibiótico');
   const altos = items.filter((i) => i.categoria === 'Alto Riesgo');
@@ -824,6 +963,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
           onDeleteItem={requestDeletePharma}
           onViewItem={openPharmaDetail}
           hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
+          dischargeDate={patient.demographics.egreso}
           theme="blue"
         />
       )}
@@ -835,6 +975,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
         onDeleteItem={requestDeletePharma}
         onViewItem={openPharmaDetail}
         hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
+        dischargeDate={patient.demographics.egreso}
         theme="orange"
       />
       <PharmaSection
@@ -845,6 +986,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
         onDeleteItem={requestDeletePharma}
         onViewItem={openPharmaDetail}
         hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
+        dischargeDate={patient.demographics.egreso}
         theme="red"
       />
       <PharmaSection
@@ -855,26 +997,26 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
         onDeleteItem={requestDeletePharma}
         onViewItem={openPharmaDetail}
         hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
+        dischargeDate={patient.demographics.egreso}
         theme="blue"
       />
 
       <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mb-6 print:border-slate-300 print:shadow-none mt-8">
         <div className="px-4 py-2 font-bold border-b bg-cyan-100 text-cyan-900 border-cyan-200 print:bg-slate-100 print:text-black print:border-slate-300">Soluciones Intravenosas (Fluidos)</div>
-        <div className="overflow-x-auto md:overflow-x-visible overscroll-x-contain print:overflow-visible">
+        <div className="overflow-x-auto md:overflow-x-visible overscroll-x-contain print:overflow-visible" onKeyDownCapture={handleTableArrowNavigation}>
           <table className="w-full min-w-[720px] md:min-w-0 table-fixed text-[11px] md:text-xs lg:text-sm border-collapse">
             <thead className="bg-slate-50 border-b print:bg-white">
               <tr>
                 <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[12%]">Categoría</th>
-                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[28%]">Principio Activo</th>
-                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[8%]">Marca Com.</th>
-                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[14%]">Dosis</th>
-                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[15%]">F. Inicio</th>
-                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[13%]">Estado</th>
-                <th className="p-1.5 md:p-2 text-center font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[10%] print:hidden">Acciones</th>
+                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[34%]">Principio Activo</th>
+                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[18%]">Volumen</th>
+                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[16%]">F. Inicio</th>
+                <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[12%]">Estado</th>
+                <th className="p-1.5 md:p-2 text-center font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[8%] print:hidden">Acciones</th>
               </tr>
             </thead>
             <tbody>
-              {solItems.length === 0 && <tr><td colSpan="7" className="p-3 text-center text-slate-400 italic">No hay soluciones IV registradas.</td></tr>}
+              {solItems.length === 0 && <tr><td colSpan="6" className="p-3 text-center text-slate-400 italic">No hay soluciones IV registradas.</td></tr>}
               {solItems.map((item) => {
                 const isSuspended = item.estado === 'Suspendido';
                 const modalOnlyChanged = hasModalOnlyChanges(item, persistedSolById.get(item.id), SOL_MODAL_FIELDS, SOL_DEFAULTS);
@@ -883,7 +1025,6 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
                   <tr key={item.id} className={`border-b border-slate-200 transition-colors ${isSuspended ? 'bg-slate-100/90 opacity-80 print:opacity-100 print:bg-slate-50' : 'hover:bg-cyan-50/50'}`}>
                     <td className="p-1.5 md:p-2 text-[11px] font-semibold text-cyan-800">Solución IV</td>
                     <td className="p-1 md:p-1.5"><input type="text" placeholder="Ej. Sol. Salina 0.9%" className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm font-medium print:border-none print:bg-transparent ${isSuspended ? 'line-through text-slate-500 bg-slate-200' : ''}`} value={item.solucion} onChange={(e) => updateSolucion(item.id, 'solucion', e.target.value)} /></td>
-                    <td className="p-1.5 md:p-2 text-center text-slate-400">-</td>
                     <td className="p-1 md:p-1.5"><input type="number" step="0.1" className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.volumen || ''} onChange={(e) => updateSolucion(item.id, 'volumen', e.target.value)} /></td>
                     <td className="p-1 md:p-1.5"><input type="date" className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm p-1 md:p-1.5 print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.fechaInicio} onChange={(e) => updateSolucion(item.id, 'fechaInicio', e.target.value)} /></td>
                     <td className="p-1 md:p-1.5">
@@ -940,6 +1081,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
           onPharmaStatusChange={updateItemStatus}
           onSolFieldChange={updateSolucion}
           onSolStatusChange={updateSolucionStatus}
+          onDuplicatePharmaToEgreso={duplicatePharmaToEgreso}
           patient={patient}
         />
       )}
@@ -947,7 +1089,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
   );
 }
 
-function PharmaSection({ title, items, updateItem, updateItemStatus, onDeleteItem, onViewItem, hasModalOnlyChanges, theme }) {
+function PharmaSection({ title, items, updateItem, updateItemStatus, onDeleteItem, onViewItem, hasModalOnlyChanges, dischargeDate, theme }) {
   const headerColors = { orange: 'bg-orange-100 text-orange-900 border-orange-200', red: 'bg-red-100 text-red-900 border-red-200', blue: 'bg-slate-100 text-slate-800 border-slate-200' };
   const isMarSection = title === 'Medicamentos de Alto Riesgo';
 
@@ -984,43 +1126,49 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, onDeleteIte
         )}
       </div>
 
-      <div className="overflow-x-auto md:overflow-x-visible overscroll-x-contain print:overflow-visible">
-        <table className="w-full min-w-[720px] md:min-w-0 table-fixed text-[11px] md:text-xs lg:text-sm border-collapse">
+      <div className="overflow-x-visible print:overflow-visible" onKeyDownCapture={handleTableArrowNavigation}>
+        <table className="w-full table-fixed text-[10px] sm:text-xs lg:text-sm border-collapse">
           <thead className="bg-slate-50 border-b print:bg-white">
             <tr>
-              <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[12%]">Categoría</th>
-              <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[26%]">Principio Activo</th>
-              <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[15%]">Marca Com.</th>
-              <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[14%]">Dosis</th>
-              <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[15%]">F. Inicio</th>
-              <th className="p-1.5 md:p-2 text-left font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[12%]">Estado</th>
-              <th className="p-1.5 md:p-2 text-center font-semibold uppercase tracking-wide text-[10px] md:text-[11px] text-slate-600 w-[10%] print:hidden">Acciones</th>
+              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[11%]">Categoría</th>
+              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[22%]">Principio Activo</th>
+              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[12%]">Marca Com.</th>
+              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[12%]">Dosis</th>
+              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[10%]">Frec.</th>
+              <th className="p-1 md:p-1.5 text-center font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[8%]">Días act.</th>
+              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[11%]">F. Inicio</th>
+              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[8%]">Estado</th>
+              <th className="p-1 md:p-1.5 text-center font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[6%] print:hidden">Acciones</th>
             </tr>
           </thead>
           <tbody>
-            {sortedItems.length === 0 && <tr><td colSpan="7" className="p-3 text-center text-slate-400 italic">No hay registros.</td></tr>}
+            {sortedItems.length === 0 && <tr><td colSpan="9" className="p-3 text-center text-slate-400 italic">No hay registros.</td></tr>}
             {sortedItems.map((item) => {
               const isSuspended = item.estado === 'Suspendido';
               const isPrn = item.prn === true;
               const modalOnlyChanged = hasModalOnlyChanges?.(item) === true;
+              const endDate = isSuspended ? item.fechaSuspension : dischargeDate;
+              const daysActive = item.fechaInicio ? (calculateDaysOfUse(item.fechaInicio, endDate) || '-') : '-';
 
               return (
                 <tr key={item.id} className={`border-b border-slate-200 transition-colors ${isPrn ? 'bg-violet-100/75 hover:bg-violet-100/90 [&_input]:bg-violet-50 [&_select]:bg-violet-50 [&_input]:border-violet-200 [&_select]:border-violet-200' : isSuspended ? 'bg-slate-100/90 opacity-80 print:opacity-100 print:bg-slate-50' : 'hover:bg-slate-50/70'} ${isPrn && isSuspended ? 'opacity-80 print:opacity-100' : ''}`}>
-                  <td className="p-1 md:p-1.5"><select className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm p-1 md:p-1.5 print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.categoria} onChange={(e) => updateItem(item.id, 'categoria', e.target.value)}><option value="">Seleccionar</option>{CATEGORIAS_FARMACO.map((c) => <option key={c} value={c}>{c}</option>)}</select></td>
-                  <td className="p-1 md:p-1.5"><input type="text" className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm font-medium print:border-none print:bg-transparent ${isSuspended ? 'line-through text-slate-500 bg-slate-200' : ''}`} value={item.principio} onChange={(e) => updateItem(item.id, 'principio', e.target.value)} /></td>
-                  <td className="p-1 md:p-1.5"><input type="text" className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} placeholder="Opcional" value={item.marcaComercial || ''} onChange={(e) => updateItem(item.id, 'marcaComercial', e.target.value)} /></td>
-                  <td className="p-1 md:p-1.5"><input type="text" className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.dosis} onChange={(e) => updateItem(item.id, 'dosis', e.target.value)} /></td>
-                  <td className="p-1 md:p-1.5"><input type="date" className={`w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm p-1 md:p-1.5 print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.fechaInicio} onChange={(e) => updateItem(item.id, 'fechaInicio', e.target.value)} /></td>
+                  <td className="p-1 md:p-1.5"><select className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm p-1 md:p-1.5 print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.categoria} onChange={(e) => updateItem(item.id, 'categoria', e.target.value)}><option value="">Seleccionar</option>{CATEGORIAS_FARMACO.map((c) => <option key={c} value={c}>{c}</option>)}</select></td>
+                  <td className="p-1 md:p-1.5"><input type="text" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm font-medium print:border-none print:bg-transparent ${isSuspended ? 'line-through text-slate-500 bg-slate-200' : ''}`} value={item.principio} onChange={(e) => updateItem(item.id, 'principio', e.target.value)} /></td>
+                  <td className="p-1 md:p-1.5"><input type="text" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} placeholder="Opcional" value={item.marcaComercial || ''} onChange={(e) => updateItem(item.id, 'marcaComercial', e.target.value)} /></td>
+                  <td className="p-1 md:p-1.5"><input type="text" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.dosis} onChange={(e) => updateItem(item.id, 'dosis', e.target.value)} /></td>
+                  <td className="p-1 md:p-1.5"><input type="text" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.frecuencia || ''} onChange={(e) => updateItem(item.id, 'frecuencia', e.target.value)} /></td>
+                  <td className="p-1 md:p-1.5 text-center font-semibold text-slate-700">{daysActive}</td>
+                  <td className="p-1 md:p-1.5"><input type="date" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm p-1 md:p-1.5 print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.fechaInicio} onChange={(e) => updateItem(item.id, 'fechaInicio', e.target.value)} /></td>
                   <td className="p-1 md:p-1.5">
-                    <select className={`w-full h-8 lg:h-9 rounded-md text-xs lg:text-sm p-1 md:p-1.5 font-semibold border print:appearance-none print:border-none print:bg-transparent ${isPrn ? 'bg-violet-100 text-violet-800 border-violet-300' : isSuspended ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-50 text-green-800 border-green-300'}`} value={item.estado} onChange={(e) => updateItemStatus(item.id, e.target.value)}>
+                    <select className={`min-w-0 w-full h-8 lg:h-9 rounded-md text-xs lg:text-sm p-1 md:p-1.5 font-semibold border print:appearance-none print:border-none print:bg-transparent ${isPrn ? 'bg-violet-100 text-violet-800 border-violet-300' : isSuspended ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-50 text-green-800 border-green-300'}`} value={item.estado} onChange={(e) => updateItemStatus(item.id, e.target.value)}>
                       <option value="Activo">Activo</option>
                       <option value="Suspendido">Suspendido</option>
                     </select>
                   </td>
                   <td className="p-1 md:p-1.5 text-center print:hidden">
                     <div className="flex items-center justify-center gap-1.5 lg:gap-2">
-                      <button onClick={() => onViewItem(item.id)} className={`inline-flex h-8 w-8 lg:h-9 lg:w-9 items-center justify-center rounded-md border shadow-sm transition ${modalOnlyChanged ? 'border-violet-300 bg-violet-100 text-violet-700 hover:bg-violet-200 hover:border-violet-400' : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 hover:border-blue-300'}`} title={modalOnlyChanged ? 'Hay cambios pendientes en campos del detalle' : 'Ver detalle'}><Eye className="w-4 h-4" /></button>
-                      <button onClick={() => onDeleteItem(item)} className="inline-flex h-8 w-8 lg:h-9 lg:w-9 items-center justify-center rounded-md border border-red-200 bg-red-50 text-red-700 shadow-sm hover:bg-red-100 hover:border-red-300 transition" title="Eliminar"><Trash2 className="w-4 h-4" /></button>
+                      <button onClick={() => onViewItem(item.id)} className={`inline-flex h-7 w-7 lg:h-8 lg:w-8 items-center justify-center rounded-md border shadow-sm transition ${modalOnlyChanged ? 'border-violet-300 bg-violet-100 text-violet-700 hover:bg-violet-200 hover:border-violet-400' : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 hover:border-blue-300'}`} title={modalOnlyChanged ? 'Hay cambios pendientes en campos del detalle' : 'Ver detalle'}><Eye className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => onDeleteItem(item)} className="inline-flex h-7 w-7 lg:h-8 lg:w-8 items-center justify-center rounded-md border border-red-200 bg-red-50 text-red-700 shadow-sm hover:bg-red-100 hover:border-red-300 transition" title="Eliminar"><Trash2 className="w-3.5 h-3.5" /></button>
                     </div>
                   </td>
                 </tr>
@@ -1033,7 +1181,7 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, onDeleteIte
   );
 }
 
-function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPharmaStatusChange, onSolFieldChange, onSolStatusChange, patient }) {
+function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPharmaStatusChange, onSolFieldChange, onSolStatusChange, onDuplicatePharmaToEgreso, patient }) {
   if (!item) return null;
 
   const isSolution = type === 'solucion';
@@ -1156,12 +1304,14 @@ function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPha
                     <div className="w-7 h-7 rounded-lg bg-sky-100 text-sky-700 flex items-center justify-center"><ListChecks className="w-4 h-4" /></div>
                     <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">Vista principal (orden de tabla)</p>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+                  <div className={`grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 ${isSuspended ? 'xl:grid-cols-8' : 'xl:grid-cols-7'} gap-3`}>
                     <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormSelect label="Categoría" value={item.categoria || ''} onChange={(e) => updateField('categoria', e.target.value)} options={CATEGORIAS_FARMACO} /></div>
                     <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="Principio Activo" value={item.principio || ''} onChange={(e) => updateField('principio', e.target.value)} /></div>
                     <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="Marca Com." value={item.marcaComercial || ''} onChange={(e) => updateField('marcaComercial', e.target.value)} /></div>
                     <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="Dosis" value={item.dosis || ''} onChange={(e) => updateField('dosis', e.target.value)} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="Frecuencia" value={item.frecuencia || ''} onChange={(e) => updateField('frecuencia', e.target.value)} /></div>
                     <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="F. Inicio" type="date" value={item.fechaInicio || ''} onChange={(e) => updateField('fechaInicio', e.target.value)} /></div>
+                    {isSuspended && <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="F. Suspensión" type="date" value={item.fechaSuspension || ''} onChange={(e) => updateField('fechaSuspension', e.target.value)} /></div>}
                     <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormSelect label="Estado" value={item.estado || 'Activo'} onChange={(e) => updateStatus(e.target.value)} options={['Activo', 'Suspendido']} /></div>
                   </div>
                 </div>
@@ -1176,12 +1326,10 @@ function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPha
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
                     <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormSelect label="Presentación" value={item.presentacion || ''} onChange={(e) => updateField('presentacion', e.target.value)} options={PRESENTACIONES} /></div>
                     <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormSelect label="Vía" value={item.via || ''} onChange={(e) => updateField('via', e.target.value)} options={VIAS} /></div>
-                    <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Frecuencia" value={item.frecuencia || ''} onChange={(e) => updateField('frecuencia', e.target.value)} /></div>
                     <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormSelect label="Idoneidad" value={item.idoneidad || 'Pendiente'} onChange={(e) => updateField('idoneidad', e.target.value)} options={IDONEIDAD_OPCIONES} /></div>
                     <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Volumen (mL)" type="number" value={item.volumen || ''} onChange={(e) => updateField('volumen', e.target.value)} /></div>
                     <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Tiempo (hr)" type="number" value={item.tiempo || ''} onChange={(e) => updateField('tiempo', e.target.value)} /></div>
                     <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Velocidad (mL/hr)" type="number" value={item.velocidad || ''} onChange={(e) => updateField('velocidad', e.target.value)} /></div>
-                    {isSuspended && <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Fecha suspensión" type="date" value={item.fechaSuspension || ''} onChange={(e) => updateField('fechaSuspension', e.target.value)} /></div>}
                     <div className="rounded-lg border border-white/80 bg-white/90 p-2 shadow-sm md:col-span-2 xl:col-span-2">
                       <label className="flex items-center gap-2 text-sm font-semibold text-slate-700 mb-2">
                         <input
@@ -1252,7 +1400,18 @@ function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPha
 
           <div className="px-4 sm:px-5 py-3 border-t border-slate-200 bg-white/95 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
             <p className="text-xs text-slate-500">Edición visual optimizada para tablet y desktop.</p>
-            <button onClick={requestClose} className="px-4 py-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 text-white font-semibold shadow-sm">Cerrar detalle</button>
+            <div className="flex flex-col-reverse sm:flex-row gap-2 sm:items-center">
+              {!isSolution && onDuplicatePharmaToEgreso && (
+                <button
+                  onClick={() => onDuplicatePharmaToEgreso(item.id)}
+                  className="px-4 py-2 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 font-semibold shadow-sm inline-flex items-center justify-center gap-2"
+                  title="Duplicar este medicamento hacia Conciliación al Egreso"
+                >
+                  <Layers className="w-4 h-4" /> Duplicar a Conciliación Egreso
+                </button>
+              )}
+              <button onClick={requestClose} className="px-4 py-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 text-white font-semibold shadow-sm">Cerrar detalle</button>
+            </div>
           </div>
         </div>
       </div>
