@@ -445,13 +445,14 @@ const calculateSC = (peso, altura) => {
 const calculateIdealWeight = (altura, genero) => {
   if (!altura || !genero || (genero !== 'Masculino' && genero !== 'Femenino')) return '';
   const inches = altura / 2.54;
-  if (inches < 60) return '-'; 
   const base = genero === 'Masculino' ? 50 : 45.5;
-  return (base + 2.3 * (inches - 60)).toFixed(1);
+  const ideal = base + 2.3 * (inches - 60);
+  if (!Number.isFinite(ideal) || ideal <= 0) return '';
+  return ideal.toFixed(1);
 };
 
 const calculateAdjustedWeight = (peso, pesoIdeal) => {
-  if (!peso || !pesoIdeal || pesoIdeal === '-') return '';
+  if (!peso || !pesoIdeal) return '';
   return (Number(pesoIdeal) + 0.4 * (Number(peso) - Number(pesoIdeal))).toFixed(1);
 };
 
