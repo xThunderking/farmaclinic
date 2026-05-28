@@ -3,6 +3,8 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle,
+  ChevronLeft,
+  ChevronRight,
   CircleHelp,
   Eye,
   FileText,
@@ -883,6 +885,23 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
   const atbs = items.filter((i) => i.categoria === 'Antibiótico');
   const altos = items.filter((i) => i.categoria === 'Alto Riesgo');
   const gens = items.filter((i) => i.categoria === 'General');
+  const pharmaNavigationIds = useMemo(() => items.map((med) => med.id), [items]);
+
+  const goToAdjacentPharmaModal = useCallback((direction) => {
+    if (detailModal.type !== 'pharma' || !detailModal.itemId || pharmaNavigationIds.length < 2) return;
+    const currentIndex = pharmaNavigationIds.indexOf(detailModal.itemId);
+    if (currentIndex < 0) return;
+    const nextIndex = (currentIndex + direction + pharmaNavigationIds.length) % pharmaNavigationIds.length;
+    setDetailModal({ open: true, type: 'pharma', itemId: pharmaNavigationIds[nextIndex] });
+  }, [detailModal.itemId, detailModal.type, pharmaNavigationIds]);
+
+  const handlePrevPharmaModal = useCallback(() => {
+    goToAdjacentPharmaModal(-1);
+  }, [goToAdjacentPharmaModal]);
+
+  const handleNextPharmaModal = useCallback(() => {
+    goToAdjacentPharmaModal(1);
+  }, [goToAdjacentPharmaModal]);
 
   const openPharmaDetail = (itemId) => setDetailModal({ open: true, type: 'pharma', itemId });
   const openSolucionDetail = (itemId) => setDetailModal({ open: true, type: 'solucion', itemId });
@@ -1083,6 +1102,9 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
           onSolStatusChange={updateSolucionStatus}
           onDuplicatePharmaToEgreso={duplicatePharmaToEgreso}
           patient={patient}
+          pharmaItemIds={pharmaNavigationIds}
+          onPrevPharmaItem={handlePrevPharmaModal}
+          onNextPharmaItem={handleNextPharmaModal}
         />
       )}
     </div>
@@ -1181,7 +1203,7 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, onDeleteIte
   );
 }
 
-function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPharmaStatusChange, onSolFieldChange, onSolStatusChange, onDuplicatePharmaToEgreso, patient }) {
+function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPharmaStatusChange, onSolFieldChange, onSolStatusChange, onDuplicatePharmaToEgreso, patient, pharmaItemIds = [], onPrevPharmaItem, onNextPharmaItem }) {
   if (!item) return null;
 
   const isSolution = type === 'solucion';
@@ -1189,6 +1211,8 @@ function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPha
   const isSuspended = item.estado === 'Suspendido';
   const endDate = isSuspended ? item.fechaSuspension : patient.demographics.egreso;
   const days = calculateDaysOfUse(item.fechaInicio, endDate);
+  const currentPharmaIndex = !isSolution ? pharmaItemIds.indexOf(item.id) : -1;
+  const canNavigatePharma = !isSolution && pharmaItemIds.length > 1 && currentPharmaIndex >= 0;
   const [isVisible, setIsVisible] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
   const [showMarHelp, setShowMarHelp] = useState(false);
@@ -1254,11 +1278,9 @@ function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPha
               <div className="w-11 h-11 rounded-xl bg-white/15 border border-white/25 text-white flex items-center justify-center shadow-sm"><Eye className="w-5 h-5" /></div>
               <div className="min-w-0">
                 <h3 className="font-bold text-white truncate">{isSolution ? 'Detalle de Solución IV' : 'Detalle de Medicamento'}</h3>
-                <p className="text-xs text-blue-100 truncate">{isSolution ? (item.solucion || 'Sin nombre') : (item.principio || 'Sin nombre')}</p>
-                <div className="mt-1 flex flex-wrap gap-1.5 text-[11px]">
-                  <span className="px-2 py-0.5 rounded-full border border-white/30 bg-white/10">{item.estado || 'Sin estado'}</span>
-                  <span className="px-2 py-0.5 rounded-full border border-white/30 bg-white/10">{isSolution ? 'Solución IV' : (item.categoria || 'Sin categoría')}</span>
-                </div>
+                <p className={`${isSolution ? 'text-sm text-blue-100' : 'text-2xl sm:text-3xl font-extrabold text-white'} mt-0.5 leading-tight truncate`}>
+                  {isSolution ? (item.solucion || 'Sin nombre') : (item.principio || 'Sin nombre')}
+                </p>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -1272,6 +1294,29 @@ function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPha
                 >
                   <CircleHelp className="w-3.5 h-3.5" /> MAR
                 </button>
+              )}
+              {canNavigatePharma && (
+                <>
+                  <button
+                    type="button"
+                    onClick={onPrevPharmaItem}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/35 bg-white/10 text-white hover:bg-white/20 transition"
+                    aria-label="Ver medicamento anterior"
+                    title="Medicamento anterior"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onNextPharmaItem}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/35 bg-white/10 text-white hover:bg-white/20 transition"
+                    aria-label="Ver medicamento siguiente"
+                    title="Medicamento siguiente"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                  <span className="hidden sm:inline text-[11px] font-semibold text-blue-100 px-2">{currentPharmaIndex + 1} / {pharmaItemIds.length}</span>
+                </>
               )}
               <button onClick={requestClose} className="p-2 rounded-lg text-white/90 hover:text-white hover:bg-white/15"><X className="w-4 h-4" /></button>
             </div>
@@ -1539,6 +1584,28 @@ function Sparkline({ data }) {
   );
 }
 
+const calculateCkdEpi2021 = (age, gender, creatinine) => {
+  const ageNum = Number(age);
+  const creatNum = Number(creatinine);
+  const isFemale = gender === 'Femenino';
+  const isMale = gender === 'Masculino';
+
+  if (!Number.isFinite(ageNum) || ageNum <= 0 || !Number.isFinite(creatNum) || creatNum <= 0 || (!isFemale && !isMale)) {
+    return '';
+  }
+
+  const k = isFemale ? 0.7 : 0.9;
+  const alpha = isFemale ? -0.241 : -0.302;
+  const ratio = creatNum / k;
+  const minPart = Math.pow(Math.min(ratio, 1), alpha);
+  const maxPart = Math.pow(Math.max(ratio, 1), -1.2);
+  const sexFactor = isFemale ? 1.012 : 1;
+  const egfr = 142 * minPart * maxPart * Math.pow(0.9938, ageNum) * sexFactor;
+
+  if (!Number.isFinite(egfr) || egfr <= 0) return '';
+  return egfr.toFixed(1);
+};
+
 function LabsTab({ patient, updatePatient }) {
   const labs = patient.labs || {};
   const d = patient.demographics;
@@ -1546,7 +1613,35 @@ function LabsTab({ patient, updatePatient }) {
   
   const creatData = labs["Creatinina Sérica"] || [];
   const latestCreat = creatData.length > 0 ? creatData[creatData.length - 1].value : '';
-  const crcl = calculateCrCl(age, d.peso, d.genero, latestCreat);
+
+  const pesoRealNum = Number(d.peso);
+  const pesoIdealRaw = calculateIdealWeight(d.altura, d.genero);
+  const pesoIdealNum = Number(pesoIdealRaw);
+
+  const pesoRealValido = Number.isFinite(pesoRealNum) && pesoRealNum > 0;
+  const pesoIdealValido = Number.isFinite(pesoIdealNum) && pesoIdealNum > 0;
+
+  let pesoDosificacion = '';
+
+  if (pesoRealValido && pesoIdealValido) {
+    if (pesoRealNum < pesoIdealNum) {
+      pesoDosificacion = pesoRealNum.toFixed(1);
+    } else if (pesoRealNum > (pesoIdealNum * 1.2)) {
+      const pesoAjustadoNum = Number(calculateAdjustedWeight(d.peso, pesoIdealRaw));
+      if (Number.isFinite(pesoAjustadoNum) && pesoAjustadoNum > 0) {
+        pesoDosificacion = pesoAjustadoNum.toFixed(1);
+      } else {
+        pesoDosificacion = pesoIdealNum.toFixed(1);
+      }
+    } else {
+      pesoDosificacion = pesoIdealNum.toFixed(1);
+    }
+  } else if (pesoRealValido) {
+    pesoDosificacion = pesoRealNum.toFixed(1);
+  }
+
+  const crcl = calculateCrCl(age, pesoDosificacion, d.genero, latestCreat);
+  const ckdEpi = calculateCkdEpi2021(age, d.genero, latestCreat);
 
   const addLabEntry = (paramName) => {
     const currentData = labs[paramName] || [];
@@ -1576,16 +1671,25 @@ function LabsTab({ patient, updatePatient }) {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-end border-b pb-2">
         <h2 className="text-2xl font-bold text-slate-800">Resultados Históricos de Laboratorio</h2>
-        {crcl && (
-           <div className="flex flex-col items-start sm:items-end">
-               <div className={`px-4 py-2 rounded-lg flex items-center shadow-sm border print:shadow-none ${getTfgColorClass(crcl)}`}>
-                  <Activity className="w-5 h-5 mr-2" />
-                  <div className="flex flex-col"><span className="text-xs font-bold uppercase">TFG Est. (Cockcroft-Gault)</span><span className="text-lg font-black">{crcl} <span className="text-sm font-normal">mL/min</span></span></div>
-               </div>
-               <span className="text-[10px] text-slate-500 mt-1 flex items-center"><AlertTriangle className="w-3 h-3 mr-1"/> Cálculo orientativo. No sustituye juicio clínico.</span>
-           </div>
-        )}
+        <div className="flex flex-col sm:flex-row gap-2 print:hidden">
+          <div className={`px-3 py-2 rounded-lg border shadow-sm min-w-[220px] ${getTfgColorClass(crcl)}`}>
+            <div className="flex items-center gap-1.5">
+              <Activity className="w-4 h-4" />
+              <span className="text-[10px] font-bold uppercase">TFG EST. (COCKCROFT-GAULT)</span>
+            </div>
+            <p className="text-3xl leading-none font-black mt-1">{crcl || '-'} <span className="text-base font-medium">mL/min</span></p>
+          </div>
+
+          <div className={`px-3 py-2 rounded-lg border shadow-sm min-w-[220px] ${getTfgColorClass(ckdEpi)}`}>
+            <div className="flex items-center gap-1.5">
+              <Activity className="w-4 h-4" />
+              <span className="text-[10px] font-bold uppercase">TFG EST. (CKD-EPI 2021)</span>
+            </div>
+            <p className="text-3xl leading-none font-black mt-1">{ckdEpi || '-'} <span className="text-[13px] font-medium">mL/min/1.73m2</span></p>
+          </div>
+        </div>
       </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {orderedLabGroups.map(([groupName, params]) => (
           <div key={groupName} className="bg-white border rounded-xl shadow-sm overflow-hidden print:shadow-none print:border-slate-300">

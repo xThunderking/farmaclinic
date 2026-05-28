@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Bell, Bug, Calendar, CheckCircle, CheckSquare, ClipboardList, Clock3, FileSpreadsheet, FileWarning, Filter, ListChecks, PieChart, Plus, RefreshCcw, Search, ShieldAlert, TestTube, Trash2, Upload, UserPlus, Users, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, Bell, Bug, Calendar, CheckCircle, CheckSquare, ClipboardList, Clock3, FileSpreadsheet, FileWarning, Filter, ListChecks, Pencil, PieChart, Plus, RefreshCcw, Search, ShieldAlert, TestTube, Trash2, Upload, UserPlus, Users, X, XCircle } from 'lucide-react';
 
 // Helper para visualización en Dashboard Calidad
 const StatusBadge = ({ done, isNA }) => {
@@ -33,6 +33,8 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
   const [filterPrmGravity, setFilterPrmGravity] = useState('');
   const [dilutionsError, setDilutionsError] = useState('');
   const [dilutionMedicationSearch, setDilutionMedicationSearch] = useState('');
+  const [dilutionModal, setDilutionModal] = useState({ open: false, mode: 'create', rowId: '', form: {} });
+  const [dilutionDeleteTarget, setDilutionDeleteTarget] = useState(null);
   const [reminderError, setReminderError] = useState('');
   const [reminderStatus, setReminderStatus] = useState('');
   const [reminderForm, setReminderForm] = useState(() => {
@@ -90,6 +92,47 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
       return medValue.includes(term);
     });
   }, [dilutionRows, dilutionMedicationSearch]);
+
+  const splitDilutionCellItems = (value = '') => {
+    const text = String(value ?? '').replace(/\r/g, '\n').trim();
+    if (!text) return [];
+
+    if (text.includes('>')) {
+      const items = text
+        .split('>')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (items.length > 0) return items;
+    }
+
+    return text
+      .split(/\n+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  };
+
+  const renderDilutionCell = (value) => {
+    const items = splitDilutionCellItems(value);
+
+    if (!items.length) {
+      return <span className="text-slate-300 text-sm">-</span>;
+    }
+
+    if (items.length === 1) {
+      return <span className="text-sm text-slate-700 leading-relaxed break-words whitespace-pre-wrap">{items[0]}</span>;
+    }
+
+    return (
+      <ul className="space-y-1.5">
+        {items.map((item, index) => (
+          <li key={`dilution-item-${index}-${item.slice(0, 16)}`} className="text-sm text-slate-700 leading-relaxed flex gap-2">
+            <span className="text-cyan-600 font-bold pt-[2px]">•</span>
+            <span className="break-words whitespace-pre-wrap">{item}</span>
+          </li>
+        ))}
+      </ul>
+    );
+  };
 
   const activePatientsForReminders = useMemo(
     () => (patients || []).filter((patient) => !patient.deleted && !patient.demographics?.egreso),
@@ -371,32 +414,64 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
   };
 
   const handleAddDilutionRow = () => {
+    if (!isDilutionAdmin) return;
+    const form = {};
+    defaultDilutionColumns.forEach((column) => {
+      form[column] = '';
+    });
+    setDilutionModal({ open: true, mode: 'create', rowId: '', form });
+  };
+
+  const handleEditDilutionRow = (row) => {
+    if (!isDilutionAdmin || !row) return;
+    const form = {};
+    defaultDilutionColumns.forEach((column) => {
+      form[column] = String(row?.[column] ?? '');
+    });
+    setDilutionModal({ open: true, mode: 'edit', rowId: row.id, form });
+  };
+
+  const handleSaveDilutionModal = () => {
     if (!isDilutionAdmin || typeof onDilutionsTableChange !== 'function') return;
+
+    const payload = {};
+    defaultDilutionColumns.forEach((column) => {
+      payload[column] = String(dilutionModal.form?.[column] ?? '').trim();
+    });
+
+    if (!payload.MEDICAMENTO) {
+      setDilutionsError('El campo MEDICAMENTO es obligatorio para guardar.');
+      return;
+    }
 
     onDilutionsTableChange((prev) => {
       const columns = Array.isArray(prev?.columns) && prev.columns.length > 0 ? prev.columns : defaultDilutionColumns;
-      const newRow = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}` };
-      columns.forEach((column) => {
-        newRow[column] = '';
-      });
+      const rows = Array.isArray(prev?.rows) ? prev.rows : [];
+
+      if (dilutionModal.mode === 'edit') {
+        return {
+          ...prev,
+          columns,
+          rows: rows.map((row) => (row.id === dilutionModal.rowId ? { ...row, ...payload } : row)),
+          updatedAt: Date.now(),
+        };
+      }
+
+      const newRow = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        ...payload,
+      };
 
       return {
         ...prev,
         columns,
-        rows: [...(prev?.rows || []), newRow],
+        rows: [...rows, newRow],
         updatedAt: Date.now(),
       };
     });
-  };
 
-  const handleUpdateDilutionCell = (rowId, column, value) => {
-    if (!isDilutionAdmin || typeof onDilutionsTableChange !== 'function') return;
-
-    onDilutionsTableChange((prev) => ({
-      ...prev,
-      rows: (prev?.rows || []).map((row) => (row.id === rowId ? { ...row, [column]: value } : row)),
-      updatedAt: Date.now(),
-    }));
+    setDilutionsError('');
+    setDilutionModal({ open: false, mode: 'create', rowId: '', form: {} });
   };
 
   const handleDeleteDilutionRow = (rowId) => {
@@ -407,6 +482,7 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
       rows: (prev?.rows || []).filter((row) => row.id !== rowId),
       updatedAt: Date.now(),
     }));
+    setDilutionDeleteTarget(null);
   };
 
   const handleDownloadDilutionsTemplate = async () => {
@@ -1310,15 +1386,20 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
               </div>
             </div>
 
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-              <div className="overflow-x-auto print:overflow-visible">
-                <table className="min-w-[900px] w-full text-left border-collapse">
-                  <thead className="bg-slate-800 text-white border-b border-slate-700">
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+              <div className="overflow-x-auto print:overflow-visible max-h-[72vh]">
+                <table className="min-w-[1280px] w-full text-left border-collapse table-fixed">
+                  <thead className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white border-b border-slate-700 sticky top-0 z-30">
                     <tr>
-                      {dilutionColumns.map((column) => (
-                        <th key={`dil-col-${column}`} className="p-3 font-semibold text-sm">{column}</th>
+                      {dilutionColumns.map((column, columnIndex) => (
+                        <th
+                          key={`dil-col-${column}`}
+                          className={`p-3 font-semibold text-[11px] uppercase tracking-wide ${columnIndex === 0 ? 'sticky left-0 z-40 bg-slate-900 min-w-[220px]' : 'min-w-[170px]'}`}
+                        >
+                          {column}
+                        </th>
                       ))}
-                      {isDilutionAdmin && <th className="p-3 font-semibold text-sm text-center w-20">Acciones</th>}
+                      {isDilutionAdmin && <th className="p-3 font-semibold text-[11px] uppercase tracking-wide text-center w-[190px] sticky right-0 z-40 bg-slate-900 border-l border-slate-700">Acciones</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -1329,31 +1410,34 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
                         </td>
                       </tr>
                     )}
-                    {filteredDilutionRows.map((row) => (
-                      <tr key={row.id} className="border-b border-slate-100 hover:bg-cyan-50/40">
-                        {dilutionColumns.map((column) => (
-                          <td key={`${row.id}-${column}`} className="p-2 align-top">
-                            {isDilutionAdmin ? (
-                              <input
-                                type="text"
-                                value={row[column] ?? ''}
-                                onChange={(e) => handleUpdateDilutionCell(row.id, column, e.target.value)}
-                                className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-800 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-100"
-                              />
-                            ) : (
-                              <span className="text-sm text-slate-700">{String(row[column] ?? '-')}</span>
-                            )}
+                    {filteredDilutionRows.map((row, rowIndex) => (
+                      <tr key={row.id} className={`border-b border-slate-100 align-top transition-colors ${rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'} hover:bg-cyan-50/70`}>
+                        {dilutionColumns.map((column, columnIndex) => (
+                          <td
+                            key={`${row.id}-${column}`}
+                            className={`p-3 align-top ${columnIndex === 0 ? `sticky left-0 z-20 border-r border-slate-200 font-semibold ${rowIndex % 2 === 0 ? 'bg-white/95' : 'bg-slate-50/95'}` : ''}`}
+                          >
+                            {renderDilutionCell(row[column])}
                           </td>
                         ))}
                         {isDilutionAdmin && (
-                          <td className="p-2 text-center">
-                            <button
-                              onClick={() => handleDeleteDilutionRow(row.id)}
-                              className="p-2 rounded-md text-red-600 hover:bg-red-100 transition-colors"
-                              title="Eliminar dilución"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                          <td className={`p-3 sticky right-0 z-20 border-l border-slate-200 ${rowIndex % 2 === 0 ? 'bg-white/95' : 'bg-slate-50/95'}`}>
+                            <div className="flex items-center justify-center gap-2">
+                              <button
+                                onClick={() => handleEditDilutionRow(row)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-blue-700 border border-blue-200 bg-blue-50 hover:bg-blue-100 transition-colors text-xs font-semibold shadow-sm"
+                                title="Editar dilución"
+                              >
+                                <Pencil className="w-3.5 h-3.5" /> Editar
+                              </button>
+                              <button
+                                onClick={() => setDilutionDeleteTarget(row)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-red-700 border border-red-200 bg-red-50 hover:bg-red-100 transition-colors text-xs font-semibold shadow-sm"
+                                title="Eliminar dilución"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" /> Eliminar
+                              </button>
+                            </div>
                           </td>
                         )}
                       </tr>
@@ -1361,7 +1445,101 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
                   </tbody>
                 </table>
               </div>
+              <div className="sm:hidden px-4 py-2 border-t border-slate-100 bg-slate-50 text-xs text-slate-500">
+                Desliza horizontalmente para ver todas las columnas de la tabla.
+              </div>
             </div>
+
+            {dilutionModal.open && (
+              <div className="fixed inset-0 z-[95] bg-slate-900/60 backdrop-blur-[1px] flex items-center justify-center p-3 sm:p-5" onClick={() => setDilutionModal({ open: false, mode: 'create', rowId: '', form: {} })}>
+                <div className="w-full max-w-6xl max-h-[92vh] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                  <div className="px-5 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-lg font-bold text-slate-800">{dilutionModal.mode === 'edit' ? 'Editar dilución' : 'Nueva dilución'}</h3>
+                      <p className="text-xs text-slate-500">Completa cada campo para guardar el registro.</p>
+                    </div>
+                    <button
+                      onClick={() => setDilutionModal({ open: false, mode: 'create', rowId: '', form: {} })}
+                      className="p-2 rounded-md text-slate-500 hover:bg-slate-200 hover:text-slate-700"
+                      title="Cerrar"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="p-5 overflow-y-auto max-h-[68vh]">
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                      {defaultDilutionColumns.map((column) => (
+                        <div key={`dilution-form-${column}`}>
+                          <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">{column}</label>
+                          <textarea
+                            rows={column === 'SOLUCIONES COMPATIBLES' ? 4 : 3}
+                            value={dilutionModal.form?.[column] ?? ''}
+                            onChange={(e) => setDilutionModal((prev) => ({
+                              ...prev,
+                              form: {
+                                ...(prev.form || {}),
+                                [column]: e.target.value,
+                              },
+                            }))}
+                            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+                            placeholder={`Captura ${column.toLowerCase()}`}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="px-5 py-4 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2">
+                    <button
+                      onClick={() => setDilutionModal({ open: false, mode: 'create', rowId: '', form: {} })}
+                      className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 bg-white hover:bg-slate-100 font-medium"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      onClick={handleSaveDilutionModal}
+                      className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-700 text-white font-medium"
+                    >
+                      Guardar cambios
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {dilutionDeleteTarget && (
+              <div className="fixed inset-0 z-[96] bg-slate-900/60 backdrop-blur-[1px] flex items-center justify-center p-4" onClick={() => setDilutionDeleteTarget(null)}>
+                <div className="w-full max-w-md rounded-xl border border-red-200 bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                  <div className="px-5 py-4 border-b border-red-100 bg-red-50 flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-full bg-white border border-red-200 text-red-700 flex items-center justify-center">
+                      <AlertTriangle className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-slate-800">Eliminar dilución</h3>
+                      <p className="text-xs text-slate-600">Esta acción no se puede deshacer.</p>
+                    </div>
+                  </div>
+                  <div className="px-5 py-4">
+                    <p className="text-sm text-slate-700">¿Deseas eliminar la dilución <span className="font-semibold">{dilutionDeleteTarget?.MEDICAMENTO || 'sin nombre'}</span>?</p>
+                  </div>
+                  <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2">
+                    <button
+                      onClick={() => setDilutionDeleteTarget(null)}
+                      className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 bg-white hover:bg-slate-100 font-medium"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      onClick={() => handleDeleteDilutionRow(dilutionDeleteTarget.id)}
+                      className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium"
+                    >
+                      Eliminar
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </>
         )}
 
