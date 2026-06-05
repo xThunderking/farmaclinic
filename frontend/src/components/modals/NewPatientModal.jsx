@@ -9,7 +9,11 @@ const normalizePatientName = (value = '') => String(value)
   .replace(/\s+/g, ' ')
   .trim();
 
-export default function NewPatientModal({ patients, onClose, onCreateNew, onCreateReingreso, formatExcelDate }) {
+export default function NewPatientModal({ patients, mode = 'normal', onClose, onCreateNew, onCreateReingreso, formatExcelDate }) {
+  const isPreRegisterMode = mode === 'preregistro';
+  const modalTitle = isPreRegisterMode ? 'Iniciar pre-registro' : 'Iniciar nuevo expediente';
+  const createNewLabel = isPreRegisterMode ? 'Crear pre-registro' : 'Crear nuevo perfil';
+  const createReingresoLabel = isPreRegisterMode ? 'Agregar como pre-reingreso' : 'Agregar como reingreso';
   const [formData, setFormData] = useState(() => {
     const currentDateLocal = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000)
       .toISOString()
@@ -84,7 +88,7 @@ export default function NewPatientModal({ patients, onClose, onCreateNew, onCrea
       <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden flex flex-col max-h-[90vh]">
         <div className="bg-blue-600 p-4 text-white flex justify-between items-center shrink-0">
           <h2 className="font-bold flex items-center">
-            <UserPlus className="w-5 h-5 mr-2" /> Iniciar nuevo expediente
+            <UserPlus className="w-5 h-5 mr-2" /> {modalTitle}
           </h2>
           <button onClick={onClose} className="text-blue-200 hover:text-white" aria-label="Cerrar modal">
             <X className="w-5 h-5" />
@@ -203,13 +207,13 @@ export default function NewPatientModal({ patients, onClose, onCreateNew, onCrea
                   onClick={() => onCreateReingreso(duplicateMatch, formData)}
                   className="flex-1 bg-amber-600 hover:bg-amber-700 text-white py-2 px-3 rounded-md font-bold shadow transition flex items-center justify-center text-sm"
                 >
-                  <Layers className="w-4 h-4 mr-2" /> Agregar como reingreso
+                  <Layers className="w-4 h-4 mr-2" /> {createReingresoLabel}
                 </button>
                 <button
                   onClick={() => onCreateNew(formData)}
                   className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 py-2 px-3 rounded-md font-bold shadow-sm transition flex items-center justify-center text-sm"
                 >
-                  <UserPlus className="w-4 h-4 mr-2" /> Crear perfil nuevo
+                  <UserPlus className="w-4 h-4 mr-2" /> {createNewLabel}
                 </button>
               </div>
             </div>
@@ -220,7 +224,7 @@ export default function NewPatientModal({ patients, onClose, onCreateNew, onCrea
               onClick={() => onCreateNew(formData)}
               className="mt-6 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-lg shadow transition-colors flex items-center justify-center"
             >
-              Crear nuevo perfil
+              {createNewLabel}
             </button>
           )}
         </div>

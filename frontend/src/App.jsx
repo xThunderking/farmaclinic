@@ -17,8 +17,8 @@ import LoginScreen from './views/LoginScreen';
 import { createPatientTabComponents } from './views/patient/PatientTabs';
 
 // --- Constantes y Listas ---
-const PRESENTACIONES = ["Amp", "Fam", "Fco", "Cap", "Tab", "Sup", "Susp", "SL", "Jer Prell", "Pch", "Ovu", "Sob"];
-const VIAS = ["IV", "IM", "VO", "SC", "Rectal", "Inh", "Tópica", "Transdermico", "Oftálmica", "Ótica", "Vaginal", "SNG", "Nasal", "SL"];
+const PRESENTACIONES = ["Amp", "Fam", "Fco", "Cap", "Tab", "Sup", "Susp", "SL", "Jer Prell", "Pch", "Ovu", "Sob", "Bolsa"];
+const VIAS = ["IV", "IM", "VO", "SC", "Rectal", "Inh", "Tópica", "Transdermico", "Oftálmica", "Ótica", "Vaginal", "SNG", "Nasal", "SL", "Intratecal"];
 const CATEGORIAS_FARMACO = ["General", "Antibiótico", "Alto Riesgo"];
 const IDONEIDAD_OPCIONES = ["Pendiente", "Idóneo", "No Idóneo"];
 const CATEGORIAS_PRM = ["Dispensación", "Prescripción", "Transcripción", "Preparación", "Administración"];
@@ -480,6 +480,41 @@ const calculateDaysOfUse = (startDate, endDateStr) => {
   return days >= 0 ? days : 0;
 };
 
+const parseMedicationFrequency = (rawValue = '') => {
+  const raw = String(rawValue || '').trim();
+  const numeric = Number(String(raw).replace(/[^\d]/g, ''));
+  if (!Number.isFinite(numeric) || numeric <= 0) return { value: 0, unit: 'hrs' };
+
+  const lower = raw.toLowerCase();
+  return {
+    value: numeric,
+    unit: lower.includes('min') ? 'min' : 'hrs',
+  };
+};
+
+const getMedicationLastDoseTimestamp = (medication = {}) => {
+  const useManualDoseCount = medication?.seguimientoUsarCantidadDosis === true;
+  if (!useManualDoseCount) return 0;
+
+  const doseCount = Number(String(medication?.seguimientoDosisCantidad || '').replace(/[^\d]/g, ''));
+  if (!Number.isFinite(doseCount) || doseCount <= 0) return 0;
+
+  const firstDoseTime = String(medication?.horaPrimeraDosis || '').trim();
+  if (!/^\d{2}:\d{2}$/.test(firstDoseTime)) return 0;
+
+  const baseDate = String(medication?.seguimientoBaseDate || '').slice(0, 10);
+  if (!baseDate) return 0;
+
+  const firstDoseTs = new Date(`${baseDate}T${firstDoseTime}`).getTime();
+  if (!Number.isFinite(firstDoseTs) || firstDoseTs <= 0) return 0;
+
+  const frequency = parseMedicationFrequency(medication?.frecuencia);
+  if (!frequency.value) return 0;
+
+  const intervalMinutes = frequency.unit === 'min' ? frequency.value : frequency.value * 60;
+  return firstDoseTs + Math.max(0, doseCount - 1) * intervalMinutes * 60 * 1000;
+};
+
 const formatExcelDate = (isoStr) => {
   if (!isoStr) return '';
   const d = new Date(isoStr);
@@ -613,6 +648,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('demographics');
   const [viewingAdmin, setViewingAdmin] = useState(false);
   const [showNewPatientModal, setShowNewPatientModal] = useState(false);
+  const [newPatientMode, setNewPatientMode] = useState('normal');
   const [isPatientSidebarOpen, setIsPatientSidebarOpen] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
   const [syncError, setSyncError] = useState('');
@@ -1464,6 +1500,24 @@ export default function App() {
     setPatients((prev) => prev.map((p) => (p.id === patientId ? { ...p, lastReviewedAt: now } : p)));
   };
 
+  const markMedicationLastDoseNotified = useCallback((patientId, medicationId, lastDoseTs) => {
+    const seenTs = Number(lastDoseTs || Date.now());
+    setPatients((prev) => prev.map((patient) => {
+      if (patient.id !== patientId) return patient;
+
+      const updatedPerfil = (patient.perfilFarmaco || []).map((medication) => {
+        if (medication.id !== medicationId) return medication;
+        const prevSeen = Number(medication.ultimaDosisNotificadaAt || 0);
+        return {
+          ...medication,
+          ultimaDosisNotificadaAt: Math.max(prevSeen, seenTs),
+        };
+      });
+
+      return { ...patient, perfilFarmaco: updatedPerfil };
+    }));
+  }, []);
+
   const activePatientReminders = useMemo(() => {
     const rows = [];
 
@@ -1573,6 +1627,36 @@ export default function App() {
           sortValue: notificationNow - dueTs,
         });
       });
+
+      (Array.isArray(patient.perfilFarmaco) ? patient.perfilFarmaco : []).forEach((medication) => {
+        if (medication.estado !== 'Activo') return;
+        if (medication.seguimientoUsarCantidadDosis !== true) return;
+
+        const lastDoseTs = getMedicationLastDoseTimestamp(medication);
+        if (!Number.isFinite(lastDoseTs) || lastDoseTs <= 0) return;
+        if (lastDoseTs > notificationNow) return;
+
+        const seenTs = Number(medication.ultimaDosisNotificadaAt || 0);
+        if (seenTs >= lastDoseTs) return;
+
+        const medicationName = String(medication.principio || 'Medicamento').trim() || 'Medicamento';
+        const patientName = patient.demographics?.nombre || 'Paciente sin nombre';
+        const dueLabel = new Date(lastDoseTs).toLocaleString();
+
+        result.push({
+          id: `last-dose-${patient.id}-${medication.id}-${lastDoseTs}`,
+          type: 'ultima-dosis',
+          patientId: patient.id,
+          patientName,
+          medicationId: medication.id,
+          medicationName,
+          lastDoseTs,
+          title: 'Última dosis programada',
+          message: `ULTIMA DOSIS DE MEDICAMENTO ${medicationName} A PACIENTE ${patientName} | Hora: ${dueLabel}`,
+          severity: 'critical',
+          sortValue: notificationNow - lastDoseTs,
+        });
+      });
     });
 
     const priority = { critical: 3, warning: 2, info: 1 };
@@ -1583,7 +1667,7 @@ export default function App() {
     });
   }, [patients, notificationNow, formatExcelDate]);
 
-  const handleNotificationOpen = (notification) => {
+  const handleNotificationOpen = useCallback((notification) => {
     if (!notification?.patientId) return;
 
     if (notification.type === 'recordatorio') {
@@ -1595,9 +1679,15 @@ export default function App() {
       return;
     }
 
+    if (notification.type === 'ultima-dosis') {
+      markMedicationLastDoseNotified(notification.patientId, notification.medicationId, notification.lastDoseTs);
+      handleEnterPatient(notification.patientId, 'pharmacotherapy');
+      return;
+    }
+
     const targetTab = notification.type === 'antibiotico' ? 'pharmacotherapy' : 'demographics';
     handleEnterPatient(notification.patientId, targetTab);
-  };
+  }, [currentUser?.id, currentUser?.nombre, currentUser?.username, handleEnterPatient, markMedicationLastDoseNotified, markReminderReviewed]);
 
   const handleNotificationMarkReviewed = (notification) => {
     if (!notification?.patientId) return;
@@ -1607,6 +1697,11 @@ export default function App() {
         userId: currentUser?.id,
         userName: currentUser?.nombre || currentUser?.username || 'Usuario',
       });
+      return;
+    }
+
+    if (notification.type === 'ultima-dosis') {
+      markMedicationLastDoseNotified(notification.patientId, notification.medicationId, notification.lastDoseTs);
       return;
     }
 
@@ -1626,7 +1721,7 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined' || typeof Notification === 'undefined') return;
 
-    const dueReminderNotifications = notifications.filter((item) => item.type === 'recordatorio');
+    const dueReminderNotifications = notifications.filter((item) => item.type === 'recordatorio' || item.type === 'ultima-dosis');
     const dueIds = new Set(dueReminderNotifications.map((item) => item.id));
 
     shownReminderNotificationsRef.current.forEach((id) => {
@@ -1647,7 +1742,11 @@ export default function App() {
       shownReminderNotificationsRef.current.add(notification.id);
 
       try {
-        const desktopNotification = new Notification(`Recordatorio: ${notification.patientName}`, {
+        const title = notification.type === 'ultima-dosis'
+          ? `Última dosis: ${notification.patientName}`
+          : `Recordatorio: ${notification.patientName}`;
+
+        const desktopNotification = new Notification(title, {
           body: notification.message,
           tag: notification.id,
           requireInteraction: notification.severity === 'critical',
@@ -1745,7 +1844,8 @@ export default function App() {
     setIsSavingDraft(false);
   };
 
-  const createNewPatientFromModal = (initialData) => {
+  const createNewPatientFromModal = (initialData, options = {}) => {
+    const mode = options?.mode === 'preregistro' ? 'preregistro' : 'normal';
     const newId = Date.now().toString();
     const now = Date.now();
     const currentDateLocal = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0,16);
@@ -1756,12 +1856,13 @@ export default function App() {
       id: newId,
       pacienteBaseId: newId, 
       deleted: false,
+      preRegistro: mode === 'preregistro',
       lastChangedAt: now,
       lastReviewedAt: now,
       activeUsers: [currentUser.id], // Ingresamos directamente como activos
       activeUsersLastSeen: { [currentUser.id]: now },
       demographics: { identificadorInterno: internalIdFinal, numeroPaciente: initialData.numeroPaciente || '', numeroEpisodio: '', habitacion: initialData.habitacion || '', nombre: initialData.nombre || '', fechaNacimiento: initialData.fechaNacimiento || '', peso: '', altura: '', ingreso: ingresoFinal, egreso: '', tipoPaciente: '', especialidad: '', embarazada: '', semanasGestacion: '', toxicomania: '', alcoholismo: '', comorbilidades: '', comorbilidadesTipo: '', observacionesGenerales: '' },
-      labs: {}, interview: {}, conciliacion: { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false }, 
+      labs: {}, interview: {}, conciliacion: { ingresoNA: false, egresoNA: false, ingresoNAMotivo: '', egresoNAMotivo: '', ingreso: [], egreso: [], transicionesArea: [], transicionAreaValidada: false, transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false }, 
       perfilFarmacoMeta: { evaluadoPrevioPrimeraDosis: false },
       perfilFarmaco: [], solucionesIV: [], prms: [], interacciones: [], ram: [], microbiologia: [], reminders: []
     };
@@ -1769,9 +1870,11 @@ export default function App() {
     setActivePatientId(newId);
     setActiveTab('demographics');
     setShowNewPatientModal(false);
+    setNewPatientMode('normal');
   };
 
-  const handleCreateReingresoFromModal = (basePatientMatch, initialData = {}) => {
+  const handleCreateReingresoFromModal = (basePatientMatch, initialData = {}, options = {}) => {
+    const mode = options?.mode === 'preregistro' ? 'preregistro' : 'normal';
     const baseId = basePatientMatch.pacienteBaseId || basePatientMatch.id;
     const newId = Date.now().toString();
     const now = Date.now();
@@ -1783,6 +1886,7 @@ export default function App() {
         id: newId,
         pacienteBaseId: baseId,
         deleted: false,
+      preRegistro: mode === 'preregistro',
       lastChangedAt: now,
       lastReviewedAt: now,
         activeUsers: [currentUser.id],
@@ -1803,7 +1907,7 @@ export default function App() {
           semanasGestacion: '',
             observacionesGenerales: ''
         },
-        labs: {}, interview: {}, conciliacion: { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false },
+        labs: {}, interview: {}, conciliacion: { ingresoNA: false, egresoNA: false, ingresoNAMotivo: '', egresoNAMotivo: '', ingreso: [], egreso: [], transicionesArea: [], transicionAreaValidada: false, transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false },
         perfilFarmacoMeta: { evaluadoPrevioPrimeraDosis: false },
         perfilFarmaco: [], solucionesIV: [], prms: [], interacciones: [], ram: [], microbiologia: [], reminders: []
     };
@@ -1811,6 +1915,15 @@ export default function App() {
     setActivePatientId(newReingreso.id);
     setActiveTab('demographics');
     setShowNewPatientModal(false);
+    setNewPatientMode('normal');
+  };
+
+  const registerPreRegisteredPatient = (id) => {
+    setPatients((prev) => prev.map((p) => {
+      if (p.id !== id) return p;
+      if (p.preRegistro !== true) return p;
+      return { ...p, preRegistro: false, lastChangedAt: Date.now() };
+    }));
   };
 
   const handleCreateReingreso = async () => {
@@ -1872,7 +1985,15 @@ export default function App() {
           reminders={activePatientReminders}
           onCreateReminder={createReminderForPatient}
            onSelect={handleEnterPatient} 
-           onCreate={() => setShowNewPatientModal(true)} 
+           onCreate={() => {
+             setNewPatientMode('normal');
+             setShowNewPatientModal(true);
+           }} 
+           onCreatePreRegister={() => {
+             setNewPatientMode('preregistro');
+             setShowNewPatientModal(true);
+           }}
+           onRegisterPreRegistered={registerPreRegisteredPatient}
            onDelete={moveToTrash} 
            onRestore={restorePatient} 
            onHardDelete={permanentlyDelete} 
@@ -1895,9 +2016,13 @@ export default function App() {
         {showNewPatientModal && (
            <NewPatientModal 
               patients={patients} 
-              onClose={() => setShowNewPatientModal(false)} 
-              onCreateNew={createNewPatientFromModal} 
-              onCreateReingreso={handleCreateReingresoFromModal} 
+              mode={newPatientMode}
+              onClose={() => {
+               setShowNewPatientModal(false);
+               setNewPatientMode('normal');
+              }} 
+              onCreateNew={(initialData) => createNewPatientFromModal(initialData, { mode: newPatientMode })} 
+              onCreateReingreso={(basePatient, initialData) => handleCreateReingresoFromModal(basePatient, initialData, { mode: newPatientMode })} 
               formatExcelDate={formatExcelDate}
            />
         )}

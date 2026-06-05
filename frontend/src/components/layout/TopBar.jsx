@@ -139,7 +139,7 @@ export default function TopBar({
                             ? 'bg-blue-100 text-blue-700 border border-blue-200'
                             : 'bg-amber-100 text-amber-700 border border-amber-200';
                         const badgeLabel = isCritical ? 'CRITICA' : isInfo ? 'INFO' : 'ATENCION';
-                        const openLabel = notification.type === 'recordatorio' ? 'Revisar paciente' : 'Abrir paciente';
+                        const openLabel = (notification.type === 'recordatorio' || notification.type === 'ultima-dosis') ? 'Revisar paciente' : 'Abrir paciente';
 
                         return (
                       <article
@@ -166,12 +166,12 @@ export default function TopBar({
                           >
                             {openLabel}
                           </button>
-                          {(notification.type === 'idle' || notification.type === 'antibiotico') && (
+                          {(notification.type === 'idle' || notification.type === 'antibiotico' || notification.type === 'ultima-dosis') && (
                             <button
                               onClick={() => onNotificationMarkReviewed?.(notification)}
                               className="text-xs font-semibold px-2.5 py-1.5 rounded-md bg-white text-slate-700 border border-slate-300 hover:bg-slate-100 transition-colors"
                             >
-                              {notification.type === 'antibiotico' ? 'Marcar como visto' : 'Marcar revision'}
+                              {notification.type === 'idle' ? 'Marcar revision' : 'Marcar como visto'}
                             </button>
                           )}
                         </div>

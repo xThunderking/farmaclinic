@@ -18,7 +18,7 @@ const getNextReminderDateTime = (minutes = 30) => {
   };
 };
 
-export default function Dashboard({ patients, dilutionsTable, onDilutionsTableChange, reminders = [], onCreateReminder, onSelect, onCreate, onDelete, onRestore, onHardDelete, currentUser, users, helpers, constants }) {
+export default function Dashboard({ patients, dilutionsTable, onDilutionsTableChange, reminders = [], onCreateReminder, onSelect, onCreate, onCreatePreRegister, onRegisterPreRegistered, onDelete, onRestore, onHardDelete, currentUser, users, helpers, constants }) {
   const { calculateAge, calculateDaysOfUse, calculateCrCl, getTfgColorClass, listOtherActiveUsers, formatExcelDate, exportToCSV } = helpers;
   const { ADULTO_MAYOR_EDAD, CATEGORIAS_PRM, MESES, ANIOS } = constants;
   const [dashboardTab, setDashboardTab] = useState('pacientes'); 
@@ -37,6 +37,8 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
   const [dilutionDeleteTarget, setDilutionDeleteTarget] = useState(null);
   const [reminderError, setReminderError] = useState('');
   const [reminderStatus, setReminderStatus] = useState('');
+  const [generalExportModal, setGeneralExportModal] = useState({ open: false, year: '', months: [] });
+  const [generalExportError, setGeneralExportError] = useState('');
   const [reminderForm, setReminderForm] = useState(() => {
     const nextDateTime = getNextReminderDateTime(30);
     return {
@@ -185,14 +187,18 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
     return match ? Number(match[0]) : null;
   };
 
+  const effectiveView = dashboardTab !== 'pacientes' && view === 'preregistrados' ? 'activos' : view;
+
   // Lógica de Filtros y Vistas General
   const filteredPatients = patients.filter(p => {
-    if (view === 'papelera') {
+    if (effectiveView === 'papelera') {
       if (!p.deleted) return false;
     } else {
       if (p.deleted) return false;
-      if (view === 'activos' && p.demographics.egreso) return false;
-      if (view === 'egresados' && !p.demographics.egreso) return false;
+      if (effectiveView === 'preregistrados' && p.preRegistro !== true) return false;
+      if (effectiveView !== 'preregistrados' && p.preRegistro === true) return false;
+      if (effectiveView === 'activos' && p.demographics.egreso) return false;
+      if (effectiveView === 'egresados' && !p.demographics.egreso) return false;
     }
 
     const dateToFilter = p.demographics.ingreso;
@@ -265,10 +271,11 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
   }, [filteredPatients, patientColumnFilter]);
 
   // Métricas de Pacientes
-  const activeCount = patients.filter(p => !p.deleted && !p.demographics.egreso).length;
+  const activeCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.preRegistro !== true).length;
+  const preRegisteredCount = patients.filter(p => !p.deleted && p.preRegistro === true).length;
   const dischargedCount = patients.filter(p => !p.deleted && p.demographics.egreso).length;
-  const atbCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.perfilFarmaco.some(f => f.categoria === 'Antibiótico' && f.estado === 'Activo')).length;
-  const altoRiesgoCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.perfilFarmaco.some(f => f.categoria === 'Alto Riesgo' && f.estado === 'Activo')).length;
+  const atbCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.preRegistro !== true && p.perfilFarmaco.some(f => f.categoria === 'Antibiótico' && f.estado === 'Activo')).length;
+  const altoRiesgoCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.preRegistro !== true && p.perfilFarmaco.some(f => f.categoria === 'Alto Riesgo' && f.estado === 'Activo')).length;
 
   // Lógica para Vista de PRM
   let allPrms = [];
@@ -363,6 +370,118 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
       ]);
     });
     exportToCSV(`Base_Pacientes_${view}_${filterMonth||'Todo'}_${filterYear||'Todo'}.csv`, rows);
+  };
+
+  const getGeneralExportHeader = () => ([
+    "Identificador interno (FV)", "N° Expediente", "Habitación", "Nombre del paciente", "Fecha de nacimiento",
+    "Edad", "Genero", "Episodio", "Fecha de ingreso DD/MM/AA HH:MM",
+    "Fecha de egreso DD/MM/AA HH:MM", "Días internado", "Diagnostico",
+    "Motivo de ingreso / Procedimiento", "Tipo de paciente", "Medico tratante",
+    "Alergias", "Especialidad", "Observaciones Generales", "Idoneidad (1ra Dosis)", "Conc. Ingreso", "Conc. Cambio Área",
+    "Conc. Cambio Médico", "Conc. Egreso", "MAR", "Polifarmacia >5 med", "\"Antibiótico ¿Cuales?\"", "Cultivos"
+  ]);
+
+  const buildGeneralExportRow = (p) => {
+    const { years } = calculateAge(p.demographics.fechaNacimiento);
+    const estancia = calculateDaysOfUse(p.demographics.ingreso, p.demographics.egreso);
+
+    const valIdoneidad = p.perfilFarmacoMeta?.evaluadoPrevioPrimeraDosis ? 'Sí' : 'No';
+    const cIng = p.conciliacion.ingresoNA ? 'NA' : (p.conciliacion.ingreso.length > 0 ? 'Sí' : 'No');
+    const cArea = p.conciliacion.transicionAreaNA ? 'NA' : (p.conciliacion.transicionesArea?.length > 0 ? 'Sí' : 'No');
+    const cMedico = p.conciliacion.transicionMedicoNA ? 'NA' : (p.conciliacion.transicionMedico ? 'Sí' : 'No');
+    const cEgr = p.conciliacion.egresoNA ? 'NA' : (p.conciliacion.egreso.length > 0 ? 'Sí' : 'No');
+
+    const activos = p.perfilFarmaco.filter((f) => f.estado === 'Activo');
+    const poli = activos.length > 5 ? 'Sí' : 'No';
+
+    const marActivos = p.perfilFarmaco.filter((f) => f.categoria === 'Alto Riesgo');
+    const marString = marActivos.length > 0 ? `Sí: ${marActivos.map((f) => f.principio).join(', ')}` : 'No';
+
+    const atbActivos = p.perfilFarmaco.filter((f) => f.categoria === 'Antibiótico');
+    const atbString = atbActivos.length > 0 ? atbActivos.map((f) => f.principio).join(', ') : 'Ninguno';
+
+    const aislamientos = p.microbiologia.map((m) => m.microorganismo).filter((x) => x).join(', ') || 'Ninguno';
+
+    return [
+      p.demographics.identificadorInterno || p.id, p.demographics.numeroPaciente, p.demographics.habitacion, p.demographics.nombre, p.demographics.fechaNacimiento,
+      years, p.demographics.genero, p.demographics.numeroEpisodio,
+      formatExcelDate(p.demographics.ingreso), formatExcelDate(p.demographics.egreso),
+      estancia, p.demographics.diagnosticoPrincipal, p.demographics.motivoIngreso,
+      p.demographics.tipoPaciente, p.demographics.medico, p.demographics.alergias, p.demographics.especialidad, p.demographics.observacionesGenerales,
+      valIdoneidad, cIng, cArea, cMedico, cEgr, marString, poli, atbString, aislamientos,
+    ];
+  };
+
+  const openGeneralExportModal = () => {
+    setGeneralExportError('');
+    setGeneralExportModal({
+      open: true,
+      year: filterYear || '',
+      months: filterMonth ? [filterMonth] : [],
+    });
+  };
+
+  const closeGeneralExportModal = () => {
+    setGeneralExportError('');
+    setGeneralExportModal((prev) => ({ ...prev, open: false }));
+  };
+
+  const toggleGeneralExportMonth = (monthValue) => {
+    setGeneralExportModal((prev) => {
+      const exists = prev.months.includes(monthValue);
+      const nextMonths = exists
+        ? prev.months.filter((m) => m !== monthValue)
+        : [...prev.months, monthValue];
+
+      return {
+        ...prev,
+        months: nextMonths,
+      };
+    });
+  };
+
+  const handleExportGeneralByMonths = () => {
+    const selectedMonths = [...generalExportModal.months].sort();
+    if (selectedMonths.length === 0) {
+      setGeneralExportError('Selecciona al menos un mes para exportar.');
+      return;
+    }
+
+    const monthSet = new Set(selectedMonths);
+    const selectedYear = String(generalExportModal.year || '').trim();
+
+    const exportPatients = (patients || []).filter((p) => {
+      if (p.deleted) return false;
+      const ingreso = String(p.demographics?.ingreso || '');
+      if (!ingreso) return false;
+
+      const [year, month] = ingreso.slice(0, 10).split('-');
+      if (!monthSet.has(month)) return false;
+      if (selectedYear && year !== selectedYear) return false;
+      return true;
+    });
+
+    if (exportPatients.length === 0) {
+      setGeneralExportError('No hay pacientes en los meses seleccionados con los filtros actuales.');
+      return;
+    }
+
+    const nonDischarged = exportPatients.filter((p) => !p.demographics?.egreso);
+    const discharged = exportPatients.filter((p) => Boolean(p.demographics?.egreso));
+    const header = getGeneralExportHeader();
+    const monthLabel = selectedMonths.join('-');
+    const yearLabel = selectedYear || 'TodosAnios';
+
+    exportToCSV(
+      `Base_Pacientes_NoEgresados_M${monthLabel}_Y${yearLabel}.csv`,
+      [header, ...nonDischarged.map(buildGeneralExportRow)],
+    );
+    exportToCSV(
+      `Base_Pacientes_Egresados_M${monthLabel}_Y${yearLabel}.csv`,
+      [header, ...discharged.map(buildGeneralExportRow)],
+    );
+
+    closeGeneralExportModal();
   };
 
   const handleExportPRMsAndInteractions = () => {
@@ -646,8 +765,8 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-blue-500">
                 <div className="bg-blue-50 p-3 rounded-lg mr-4"><Users className="w-8 h-8 text-blue-600" /></div>
                 <div>
-                  <p className="text-sm font-medium text-slate-500">{view === 'egresados' ? 'Total Pacientes Egresados' : 'Total Pacientes Activos'}</p>
-                  <p className="text-3xl font-black text-slate-800">{view === 'egresados' ? dischargedCount : activeCount}</p>
+                  <p className="text-sm font-medium text-slate-500">{view === 'egresados' ? 'Total Pacientes Egresados' : view === 'preregistrados' ? 'Total Pre-registrados' : 'Total Pacientes Activos'}</p>
+                  <p className="text-3xl font-black text-slate-800">{view === 'egresados' ? dischargedCount : view === 'preregistrados' ? preRegisteredCount : activeCount}</p>
                 </div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-orange-500">
@@ -664,6 +783,7 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
             <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-col lg:flex-row justify-between lg:items-center gap-4">
               <div className="flex flex-wrap gap-1 bg-slate-100 p-1 rounded-lg w-full lg:w-auto">
                 <button onClick={() => setView('activos')} className={`px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${view === 'activos' ? 'bg-white text-blue-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Pacientes Activos</button>
+                <button onClick={() => setView('preregistrados')} className={`px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${view === 'preregistrados' ? 'bg-white text-blue-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Pre-registrados</button>
                 <button onClick={() => setView('egresados')} className={`px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${view === 'egresados' ? 'bg-white text-blue-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Egresados</button>
                 <button onClick={() => setView('papelera')} className={`px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-colors flex items-center ${view === 'papelera' ? 'bg-red-50 text-red-700 shadow-sm border border-red-200' : 'text-slate-600 hover:text-red-600'}`}><Trash2 className="w-4 h-4 mr-1"/> Papelera</button>
               </div>
@@ -680,9 +800,10 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
                   <option value="">Año (Todos)</option>{ANIOS.map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
                 
-                <button onClick={handleExportGeneral} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg flex items-center font-medium shadow-sm transition text-sm" title="Exportar Demográficos y Clínicos"><FileSpreadsheet className="w-4 h-4 mr-2" /> Exportar General</button>
+                <button onClick={openGeneralExportModal} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg flex items-center font-medium shadow-sm transition text-sm" title="Exportar Demográficos y Clínicos"><FileSpreadsheet className="w-4 h-4 mr-2" /> Exportar General</button>
 
                 {view !== 'papelera' && <button onClick={onCreate} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center font-medium shadow-sm transition text-sm"><UserPlus className="w-4 h-4 mr-2" /> Nuevo</button>}
+                {view !== 'papelera' && <button onClick={onCreatePreRegister} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg flex items-center font-medium shadow-sm transition text-sm"><Plus className="w-4 h-4 mr-2" /> Pre-Registro</button>}
               </div>
             </div>
 
@@ -767,6 +888,8 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
                       rowColor += "bg-slate-100 opacity-70";
                     }
 
+                    const isPreRegistered = p.preRegistro === true;
+
                     return (
                       <tr key={p.id} className={rowColor} onClick={() => {
                           if(view === 'papelera') return;
@@ -786,13 +909,14 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
                           <div className="flex space-x-1.5 mt-1 flex-wrap">
                             {/* ETIQUETA COLABORATIVA EN LUGAR DE CANDADO ROJO */}
                             {otherActiveUsers.length > 0 && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800 mb-1" title={`Editando: ${otherNames}`}><Users className="w-3 h-3 mr-1"/> EDITANDO ({otherActiveUsers.length})</span>}
+                            {isPreRegistered && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-200 text-indigo-800 mb-1">PRE-REGISTRADO</span>}
                             {hasAdultoMayor && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 mb-1">ADULTO MAYOR ({ADULTO_MAYOR_EDAD}+)</span>}
                             {hasPolimedicado && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-200 text-amber-900 mb-1">PACIENTE POLIMEDICADO +5</span>}
                             {hasAlergias && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-600 text-white mb-1" title={p.demographics.alergias}>ALERGIAS</span>}
                             {idoneidadOk && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-200 text-green-800 mb-1" title="Idoneidad validada previo a primera dosis"><CheckCircle className="w-3 h-3 mr-1"/> IDONEIDAD OK</span>}
                             {hasAltoRiesgo && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-200 text-red-800 mb-1">ALTO RIESGO</span>}
                             {hasATB && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-200 text-orange-800 mb-1">ATB ({maxDiasATB} d)</span>}
-                            {hasAislamiento && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-200 text-purple-800 mb-1 flex items-center" title="Cultivo Positivo"><Bug className="w-3 h-3 mr-1"/> AISLAMIENTO</span>}
+                            {hasAislamiento && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-200 text-purple-800 mb-1" title="Cultivo Positivo"><Bug className="w-3 h-3 mr-1"/> AISLAMIENTO</span>}
                           </div>
                         </td>
                         <td className="p-3">
@@ -817,7 +941,22 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
                               <button disabled={otherActiveUsers.length > 0} onClick={(e) => { e.stopPropagation(); if(otherActiveUsers.length === 0) onHardDelete(p.id); }} className={`p-2 rounded-md transition-colors ${otherActiveUsers.length > 0 ? 'text-slate-300 cursor-not-allowed' : 'text-red-600 hover:bg-red-200'}`} title={otherActiveUsers.length > 0 ? 'En uso por otros usuarios' : 'Eliminar permanentemente'}><Trash2 className="w-5 h-5" /></button>
                             </div>
                           ) : (
-                            <button disabled={otherActiveUsers.length > 0} onClick={(e) => { e.stopPropagation(); if(otherActiveUsers.length === 0) onDelete(p.id); }} className={`p-2 rounded-md transition-colors ${otherActiveUsers.length > 0 ? 'text-slate-300 cursor-not-allowed' : 'text-slate-400 hover:bg-red-100 hover:text-red-600'}`} title={otherActiveUsers.length > 0 ? 'En uso por otros usuarios' : 'Mover a papelera'}><Trash2 className="w-5 h-5" /></button>
+                            <div className="flex items-center gap-2">
+                              {view === 'preregistrados' && (
+                                <button
+                                  disabled={otherActiveUsers.length > 0}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (otherActiveUsers.length === 0) onRegisterPreRegistered?.(p.id);
+                                  }}
+                                  className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${otherActiveUsers.length > 0 ? 'text-slate-300 cursor-not-allowed border border-slate-200' : 'text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100'}`}
+                                  title={otherActiveUsers.length > 0 ? 'En uso por otros usuarios' : 'Registrar y mover a pacientes activos'}
+                                >
+                                  Registrar
+                                </button>
+                              )}
+                              <button disabled={otherActiveUsers.length > 0} onClick={(e) => { e.stopPropagation(); if(otherActiveUsers.length === 0) onDelete(p.id); }} className={`p-2 rounded-md transition-colors ${otherActiveUsers.length > 0 ? 'text-slate-300 cursor-not-allowed' : 'text-slate-400 hover:bg-red-100 hover:text-red-600'}`} title={otherActiveUsers.length > 0 ? 'En uso por otros usuarios' : 'Mover a papelera'}><Trash2 className="w-5 h-5" /></button>
+                            </div>
                           )}
                         </td>
                       </tr>
@@ -1541,6 +1680,88 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
               </div>
             )}
           </>
+        )}
+
+        {generalExportModal.open && (
+          <div className="fixed inset-0 z-[96] bg-slate-900/60 backdrop-blur-[1px] flex items-center justify-center p-4" onClick={closeGeneralExportModal}>
+            <div className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="px-5 py-4 border-b border-slate-200 bg-slate-50 flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-bold text-slate-800">Exportar general por meses</h3>
+                  <p className="text-xs text-slate-600">Selecciona uno o varios meses. Se descargan 2 archivos: egresados y no egresados.</p>
+                </div>
+                <button onClick={closeGeneralExportModal} className="p-2 rounded-md text-slate-500 hover:bg-slate-200 hover:text-slate-700" title="Cerrar">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="px-5 py-4 space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Año (opcional)</label>
+                  <select
+                    value={generalExportModal.year}
+                    onChange={(e) => setGeneralExportModal((prev) => ({ ...prev, year: e.target.value }))}
+                    className="py-2 px-3 border border-slate-300 rounded-lg text-sm shadow-sm text-slate-700 w-full sm:w-56"
+                  >
+                    <option value="">Todos los años</option>
+                    {ANIOS.map((yearValue) => <option key={`export-year-${yearValue}`} value={yearValue}>{yearValue}</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Meses</label>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setGeneralExportModal((prev) => ({ ...prev, months: MESES.map((m) => m.val) }))}
+                        className="px-2.5 py-1 rounded border border-slate-300 text-slate-700 text-xs bg-white hover:bg-slate-100"
+                      >
+                        Todos
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setGeneralExportModal((prev) => ({ ...prev, months: [] }))}
+                        className="px-2.5 py-1 rounded border border-slate-300 text-slate-700 text-xs bg-white hover:bg-slate-100"
+                      >
+                        Ninguno
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {MESES.map((month) => {
+                      const checked = generalExportModal.months.includes(month.val);
+                      return (
+                        <label key={`export-month-${month.val}`} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm cursor-pointer transition ${checked ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}>
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 rounded border-slate-300 text-emerald-600"
+                            checked={checked}
+                            onChange={() => toggleGeneralExportMonth(month.val)}
+                          />
+                          <span>{month.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {generalExportError && (
+                  <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm">{generalExportError}</div>
+                )}
+              </div>
+
+              <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2">
+                <button onClick={closeGeneralExportModal} className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 bg-white hover:bg-slate-100 font-medium">
+                  Cancelar
+                </button>
+                <button onClick={handleExportGeneralByMonths} className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium inline-flex items-center gap-2">
+                  <FileSpreadsheet className="w-4 h-4" /> Exportar
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
       </div>

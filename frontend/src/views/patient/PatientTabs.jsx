@@ -138,6 +138,25 @@ export function createPatientTabComponents(deps) {
     nextField.focus();
   };
 
+  const sanitizeFrequencyNumber = (value = '') => String(value ?? '').replace(/[^\d]/g, '');
+
+  const parseFrequency = (rawValue = '') => {
+    const raw = String(rawValue ?? '').trim();
+    if (!raw) return { value: '', unit: 'hrs' };
+
+    const value = sanitizeFrequencyNumber(raw);
+    const lower = raw.toLowerCase();
+    const unit = lower.includes('min') ? 'min' : 'hrs';
+
+    return { value, unit };
+  };
+
+  const buildFrequencyValue = (value = '', unit = 'hrs') => {
+    const numericValue = sanitizeFrequencyNumber(value);
+    if (!numericValue) return '';
+    return `${numericValue} ${unit === 'min' ? 'min' : 'hrs'}`;
+  };
+
 // ==========================================
 // VISTAS DEL PACIENTE (Pestañas)
 // ==========================================
@@ -454,8 +473,20 @@ function DemographicsTab({ patient, updatePatient, allPatients = [] }) {
 
 function ConciliationTab({ patient, updatePatient }) {
   const i = patient.interview || {};
-  const conc = patient.conciliacion || { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false };
+  const conc = patient.conciliacion || {
+    ingresoNA: false,
+    egresoNA: false,
+    ingresoNAMotivo: '',
+    egresoNAMotivo: '',
+    ingreso: [],
+    egreso: [],
+    transicionesArea: [],
+    transicionMedico: false,
+    transicionAreaNA: false,
+    transicionMedicoNA: false,
+  };
   const [showInterviewModal, setShowInterviewModal] = useState(false);
+  const [transicionAreaValidationError, setTransicionAreaValidationError] = useState('');
 
   const handleAnswer = (qId, value) => updatePatient({ interview: { ...i, [qId]: value } });
   
@@ -483,18 +514,58 @@ function ConciliationTab({ patient, updatePatient }) {
   const removeItem = (type, id) => updatePatient({ conciliacion: { ...conc, [type]: (conc[type] || []).filter(item => item.id !== id) } });
 
   const toggleNA = (field) => {
-    updatePatient({ conciliacion: { ...conc, [field]: !conc[field] } });
+    const nextValue = !conc[field];
+    if (field === 'transicionAreaNA') {
+      setTransicionAreaValidationError('');
+      updatePatient({ conciliacion: { ...conc, [field]: nextValue } });
+      return;
+    }
+    updatePatient({ conciliacion: { ...conc, [field]: nextValue } });
   };
 
   const addTransicionArea = () => {
-    const nuevaTransicion = { id: Date.now().toString(), fecha: new Date().toISOString().split('T')[0], origen: '', destino: '' };
+    const nuevaTransicion = { id: Date.now().toString(), fecha: new Date().toISOString().split('T')[0], origen: '', destino: '', validado: false };
+    setTransicionAreaValidationError('');
     updatePatient({ conciliacion: { ...conc, transicionesArea: [...(conc.transicionesArea || []), nuevaTransicion] } });
   };
   const updateTransicionArea = (id, field, value) => {
-    updatePatient({ conciliacion: { ...conc, transicionesArea: conc.transicionesArea.map(t => t.id === id ? { ...t, [field]: value } : t) } });
+    updatePatient({ conciliacion: { ...conc, transicionesArea: conc.transicionesArea.map(t => t.id === id ? { ...t, [field]: value, validado: false } : t) } });
   };
   const removeTransicionArea = (id) => {
+    setTransicionAreaValidationError('');
     updatePatient({ conciliacion: { ...conc, transicionesArea: conc.transicionesArea.filter(t => t.id !== id) } });
+  };
+
+  const validateSingleTransicionArea = (id) => {
+    if (conc.transicionAreaNA) {
+      setTransicionAreaValidationError('No aplica está activado para cambio de área.');
+      return;
+    }
+
+    const rows = conc.transicionesArea || [];
+    const target = rows.find((row) => row.id === id);
+    if (!target) {
+      setTransicionAreaValidationError('No se encontró el cambio de área a validar.');
+      return;
+    }
+
+    const hasFecha = String(target.fecha || '').trim().length > 0;
+    const hasOrigen = String(target.origen || '').trim().length > 0;
+    const hasDestino = String(target.destino || '').trim().length > 0;
+
+    if (!hasFecha || !hasOrigen || !hasDestino) {
+      const rowIndex = rows.findIndex((row) => row.id === id);
+      setTransicionAreaValidationError(`Completa fecha, área de origen y área de destino en el cambio #${rowIndex + 1}.`);
+      return;
+    }
+
+    setTransicionAreaValidationError('');
+    updatePatient({
+      conciliacion: {
+        ...conc,
+        transicionesArea: rows.map((row) => (row.id === id ? { ...row, validado: true } : row)),
+      },
+    });
   };
 
   const sections = [...new Set(PREGUNTAS_ENTREVISTA.map(q => q.section))];
@@ -555,6 +626,19 @@ function ConciliationTab({ patient, updatePatient }) {
            <input type="checkbox" className="w-4 h-4 text-blue-600 rounded" checked={conc.ingresoNA || false} onChange={() => toggleNA('ingresoNA')} />
            <span className="font-medium">No aplica / No se realizó (Paciente no tomaba medicamentos previos)</span>
         </label>
+
+        {conc.ingresoNA && (
+          <div className="mb-4">
+            <label className="fc-label">Motivo de No aplica (Ingreso)</label>
+            <textarea
+              rows={2}
+              className="fc-textarea"
+              placeholder="Describe por qué no aplica la conciliación al ingreso..."
+              value={conc.ingresoNAMotivo || ''}
+              onChange={(e) => updatePatient({ conciliacion: { ...conc, ingresoNAMotivo: e.target.value } })}
+            />
+          </div>
+        )}
         
         {conc.ingresoNA ? (
           <div className="p-4 bg-slate-100 text-slate-500 rounded border border-slate-200 italic print:bg-transparent">Conciliación al ingreso marcada como No Aplica.</div>
@@ -574,6 +658,12 @@ function ConciliationTab({ patient, updatePatient }) {
                 <Plus className="w-3 h-3 mr-1" /> Registrar Cambio
               </button>
             </div>
+
+            {transicionAreaValidationError && (
+              <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {transicionAreaValidationError}
+              </div>
+            )}
             
             <label className="flex items-center space-x-2 text-sm text-slate-600 mb-4 cursor-pointer w-max print:mb-2">
                <input type="checkbox" className="w-4 h-4 text-blue-600 rounded" checked={conc.transicionAreaNA || false} onChange={() => toggleNA('transicionAreaNA')} />
@@ -591,7 +681,17 @@ function ConciliationTab({ patient, updatePatient }) {
                     <div className="flex-1 w-full pl-6 md:pl-0"><FormInput label="Fecha del Cambio" type="date" value={t.fecha} onChange={(e) => updateTransicionArea(t.id, 'fecha', e.target.value)} /></div>
                     <div className="flex-1 w-full"><FormInput label="Área de Origen" value={t.origen} onChange={(e) => updateTransicionArea(t.id, 'origen', e.target.value)} placeholder="Ej. Urgencias" /></div>
                     <div className="flex-1 w-full"><FormInput label="Área de Destino" value={t.destino} onChange={(e) => updateTransicionArea(t.id, 'destino', e.target.value)} placeholder="Ej. Piso 3" /></div>
-                    <button onClick={() => removeTransicionArea(t.id)} className="p-2 mb-1 text-red-500 hover:bg-red-100 rounded transition print:hidden"><Trash2 className="w-5 h-5"/></button>
+                    <div className="flex items-center gap-1 print:hidden">
+                      <button onClick={() => validateSingleTransicionArea(t.id)} className="p-2 mb-1 text-emerald-600 hover:bg-emerald-100 rounded transition" title="Validar cambio">
+                        <CheckCircle className="w-5 h-5"/>
+                      </button>
+                      <button onClick={() => removeTransicionArea(t.id)} className="p-2 mb-1 text-red-500 hover:bg-red-100 rounded transition" title="Eliminar cambio"><Trash2 className="w-5 h-5"/></button>
+                    </div>
+                    {t.validado === true && (
+                      <span className="absolute -top-2 right-2 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                        Validado
+                      </span>
+                    )}
                   </div>
                 ))}
               </div>
@@ -626,6 +726,19 @@ function ConciliationTab({ patient, updatePatient }) {
            <input type="checkbox" className="w-4 h-4 text-blue-600 rounded" checked={conc.egresoNA || false} onChange={() => toggleNA('egresoNA')} />
            <span className="font-medium">No aplica / No se realizó (Egresado sin medicamentos u otro motivo)</span>
         </label>
+
+        {conc.egresoNA && (
+          <div className="mb-4">
+            <label className="fc-label">Motivo de No aplica (Egreso)</label>
+            <textarea
+              rows={2}
+              className="fc-textarea"
+              placeholder="Describe por qué no aplica la conciliación al egreso..."
+              value={conc.egresoNAMotivo || ''}
+              onChange={(e) => updatePatient({ conciliacion: { ...conc, egresoNAMotivo: e.target.value } })}
+            />
+          </div>
+        )}
         
         {conc.egresoNA ? (
           <div className="p-4 bg-slate-100 text-slate-500 rounded border border-slate-200 italic print:bg-transparent">Conciliación al egreso marcada como No Aplica.</div>
@@ -639,7 +752,7 @@ function ConciliationTab({ patient, updatePatient }) {
 
 function ConciliationTable({ items, type, onUpdate, onRemove }) {
   const isIngreso = type === 'ingreso';
-  const emptyColSpan = isIngreso ? 9 : 9;
+  const emptyColSpan = isIngreso ? 10 : 8;
 
   return (
     <div className="overflow-x-auto overscroll-x-contain print:overflow-visible">
@@ -649,7 +762,7 @@ function ConciliationTable({ items, type, onUpdate, onRemove }) {
             <th className="p-2 text-left font-semibold">Principio Activo</th>
             {isIngreso && <th className="p-2 text-left font-semibold w-24">Marca Com.</th>}
             <th className="p-2 text-left font-semibold w-24">Dosis</th>
-            {!isIngreso && <th className="p-2 text-left font-semibold w-24">Frecuencia</th>}
+            <th className="p-2 text-left font-semibold w-24">Frecuencia</th>
             <th className="p-2 text-left font-semibold w-20">Vía</th>
             {isIngreso && <th className="p-2 text-left font-semibold w-32">Desde Cuándo</th>}
             {isIngreso && <th className="p-2 text-left font-semibold w-36">Última toma medicamento</th>}
@@ -669,7 +782,7 @@ function ConciliationTable({ items, type, onUpdate, onRemove }) {
               {isIngreso && <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" placeholder="Opcional" value={item.marcaComercial || ''} onChange={(e) => onUpdate(type, item.id, 'marcaComercial', e.target.value)} /></td>}
               
               <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" value={item.dosis} onChange={(e) => onUpdate(type, item.id, 'dosis', e.target.value)} /></td>
-              {!isIngreso && <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" value={item.frecuencia || ''} onChange={(e) => onUpdate(type, item.id, 'frecuencia', e.target.value)} /></td>}
+              <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" value={item.frecuencia || ''} onChange={(e) => onUpdate(type, item.id, 'frecuencia', e.target.value)} /></td>
               <td className="p-1"><select className="w-full border-slate-300 rounded text-sm p-1 print:appearance-none print:border-none print:bg-transparent" value={item.via} onChange={(e) => onUpdate(type, item.id, 'via', e.target.value)}><option value="">-</option>{VIAS.map(v => <option key={v} value={v}>{v}</option>)}</select></td>
               
               {isIngreso && <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" placeholder="Ej. 2 meses" value={item.desdeCuando || ''} onChange={(e) => onUpdate(type, item.id, 'desdeCuando', e.target.value)} /></td>}
@@ -704,7 +817,18 @@ function ConciliationTable({ items, type, onUpdate, onRemove }) {
 function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
   const items = patient.perfilFarmaco || [];
   const solItems = patient.solucionesIV || [];
-  const conc = patient.conciliacion || { ingresoNA: false, egresoNA: false, ingreso: [], egreso: [], transicionesArea: [], transicionMedico: false, transicionAreaNA: false, transicionMedicoNA: false };
+  const conc = patient.conciliacion || {
+    ingresoNA: false,
+    egresoNA: false,
+    ingresoNAMotivo: '',
+    egresoNAMotivo: '',
+    ingreso: [],
+    egreso: [],
+    transicionesArea: [],
+    transicionMedico: false,
+    transicionAreaNA: false,
+    transicionMedicoNA: false,
+  };
   const meta = patient.perfilFarmacoMeta || { evaluadoPrevioPrimeraDosis: false };
   const [detailModal, setDetailModal] = useState({ open: false, type: 'pharma', itemId: '' });
   const [deleteModal, setDeleteModal] = useState({ open: false, type: 'pharma', itemId: '', label: '' });
@@ -717,7 +841,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
     [sourcePatient?.solucionesIV],
   );
 
-  const PHARMA_MODAL_FIELDS = ['presentacion', 'via', 'volumen', 'tiempo', 'velocidad', 'idoneidad', 'fechaSuspension', 'observaciones', 'prn', 'prnSituacion'];
+  const PHARMA_MODAL_FIELDS = ['presentacion', 'via', 'volumen', 'tiempo', 'velocidad', 'idoneidad', 'fechaSuspension', 'observaciones', 'prn', 'prnSituacion', 'horaPrimeraDosis', 'seguimientoUsarCantidadDosis', 'seguimientoDosisCantidad', 'seguimientoBaseDate'];
   const PHARMA_DEFAULTS = {
     presentacion: '',
     via: '',
@@ -727,6 +851,10 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
     velocidad: '',
     idoneidad: 'Pendiente',
     fechaSuspension: '',
+    horaPrimeraDosis: '',
+    seguimientoUsarCantidadDosis: false,
+    seguimientoDosisCantidad: '',
+    seguimientoBaseDate: '',
     observaciones: '',
     prn: false,
     prnSituacion: '',
@@ -783,14 +911,60 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
   };
 
   const addItem = () => {
-    const newItem = { id: Date.now().toString(), categoria: '', principio: '', marcaComercial: '', presentacion: '', dosis: '', via: '', frecuencia: '', volumen: '', tiempo: '', velocidad: '', fechaInicio: new Date().toISOString().split('T')[0], estado: 'Activo', idoneidad: 'Pendiente', fechaSuspension: '', observaciones: '', prn: false, prnSituacion: '' };
+    const newItem = { id: Date.now().toString(), categoria: '', principio: '', marcaComercial: '', presentacion: '', dosis: '', via: '', frecuencia: '', volumen: '', tiempo: '', velocidad: '', fechaInicio: new Date().toISOString().split('T')[0], estado: 'Activo', idoneidad: 'Pendiente', fechaSuspension: '', horaPrimeraDosis: '', seguimientoUsarCantidadDosis: false, seguimientoDosisCantidad: '', seguimientoBaseDate: '', observaciones: '', prn: false, prnSituacion: '' };
     updatePatient({ perfilFarmaco: [...items, newItem] });
   };
 
   const updateItem = (id, field, value) => {
     const newList = items.map((item) => {
       if (item.id !== id) return item;
+
+      if (field === 'frecuencia' || field === 'frecuenciaUnidad') {
+        const currentFrequency = parseFrequency(item.frecuencia);
+        const nextValue = field === 'frecuencia' ? sanitizeFrequencyNumber(value) : currentFrequency.value;
+        const nextUnit = field === 'frecuenciaUnidad' ? (value === 'min' ? 'min' : 'hrs') : currentFrequency.unit;
+        return {
+          ...item,
+          frecuencia: buildFrequencyValue(nextValue, nextUnit),
+          ultimaDosisNotificadaAt: 0,
+        };
+      }
+
+      if (field === 'seguimientoDosisCantidad') {
+        return {
+          ...item,
+          seguimientoDosisCantidad: sanitizeFrequencyNumber(value),
+          ultimaDosisNotificadaAt: 0,
+        };
+      }
+
+      if (field === 'seguimientoUsarCantidadDosis') {
+        const enabled = value === true;
+        const todayLocal = new Date().toISOString().slice(0, 10);
+        return {
+          ...item,
+          seguimientoUsarCantidadDosis: enabled,
+          seguimientoDosisCantidad: enabled ? String(item.seguimientoDosisCantidad || '') : '',
+          seguimientoBaseDate: enabled ? (item.seguimientoBaseDate || todayLocal) : '',
+          ultimaDosisNotificadaAt: 0,
+        };
+      }
+
       let updatedItem = { ...item, [field]: value };
+      if (field === 'horaPrimeraDosis') {
+        const todayLocal = new Date().toISOString().slice(0, 10);
+        updatedItem = {
+          ...updatedItem,
+          seguimientoBaseDate: value ? (item.seguimientoBaseDate || todayLocal) : item.seguimientoBaseDate,
+          ultimaDosisNotificadaAt: 0,
+        };
+      }
+      if (field === 'seguimientoBaseDate') {
+        updatedItem = {
+          ...updatedItem,
+          ultimaDosisNotificadaAt: 0,
+        };
+      }
       if (field === 'volumen' || field === 'tiempo' || field === 'velocidad') {
         updatedItem = recalculateInfusionFields(updatedItem, field);
       }
@@ -1171,6 +1345,7 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, onDeleteIte
               const modalOnlyChanged = hasModalOnlyChanges?.(item) === true;
               const endDate = isSuspended ? item.fechaSuspension : dischargeDate;
               const daysActive = item.fechaInicio ? (calculateDaysOfUse(item.fechaInicio, endDate) || '-') : '-';
+              const frequency = parseFrequency(item.frecuencia);
 
               return (
                 <tr key={item.id} className={`border-b border-slate-200 transition-colors ${isPrn ? 'bg-violet-100/75 hover:bg-violet-100/90 [&_input]:bg-violet-50 [&_select]:bg-violet-50 [&_input]:border-violet-200 [&_select]:border-violet-200' : isSuspended ? 'bg-slate-100/90 opacity-80 print:opacity-100 print:bg-slate-50' : 'hover:bg-slate-50/70'} ${isPrn && isSuspended ? 'opacity-80 print:opacity-100' : ''}`}>
@@ -1178,7 +1353,27 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, onDeleteIte
                   <td className="p-1 md:p-1.5"><input type="text" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm font-medium print:border-none print:bg-transparent ${isSuspended ? 'line-through text-slate-500 bg-slate-200' : ''}`} value={item.principio} onChange={(e) => updateItem(item.id, 'principio', e.target.value)} /></td>
                   <td className="p-1 md:p-1.5"><input type="text" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} placeholder="Opcional" value={item.marcaComercial || ''} onChange={(e) => updateItem(item.id, 'marcaComercial', e.target.value)} /></td>
                   <td className="p-1 md:p-1.5"><input type="text" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.dosis} onChange={(e) => updateItem(item.id, 'dosis', e.target.value)} /></td>
-                  <td className="p-1 md:p-1.5"><input type="text" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.frecuencia || ''} onChange={(e) => updateItem(item.id, 'frecuencia', e.target.value)} /></td>
+                  <td className="p-1 md:p-1.5">
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`}
+                        value={frequency.value}
+                        onChange={(e) => updateItem(item.id, 'frecuencia', e.target.value)}
+                        placeholder="0"
+                      />
+                      <select
+                        className={`h-8 lg:h-9 w-[76px] border-slate-300 rounded-md text-xs lg:text-sm p-1 md:p-1.5 font-semibold print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`}
+                        value={frequency.unit}
+                        onChange={(e) => updateItem(item.id, 'frecuenciaUnidad', e.target.value)}
+                      >
+                        <option value="hrs">hrs</option>
+                        <option value="min">min</option>
+                      </select>
+                    </div>
+                  </td>
                   <td className="p-1 md:p-1.5 text-center font-semibold text-slate-700">{daysActive}</td>
                   <td className="p-1 md:p-1.5"><input type="date" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm p-1 md:p-1.5 print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.fechaInicio} onChange={(e) => updateItem(item.id, 'fechaInicio', e.target.value)} /></td>
                   <td className="p-1 md:p-1.5">
@@ -1211,6 +1406,61 @@ function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPha
   const isSuspended = item.estado === 'Suspendido';
   const endDate = isSuspended ? item.fechaSuspension : patient.demographics.egreso;
   const days = calculateDaysOfUse(item.fechaInicio, endDate);
+  const frequency = parseFrequency(item.frecuencia);
+  const frequencyNumeric = Number(frequency.value || 0);
+  const intervalMinutes = frequencyNumeric > 0
+    ? (frequency.unit === 'min' ? frequencyNumeric : frequencyNumeric * 60)
+    : 0;
+  const dosesPerDay = intervalMinutes > 0 ? Math.max(1, Math.floor((24 * 60) / intervalMinutes)) : 0;
+  const useManualDoseCount = item.seguimientoUsarCantidadDosis === true;
+  const customDoseCount = Number(sanitizeFrequencyNumber(item.seguimientoDosisCantidad || ''));
+  const doseCountBase = useManualDoseCount && customDoseCount > 0 ? customDoseCount : dosesPerDay;
+  const displayedDoses = Math.max(0, Math.min(doseCountBase, 24));
+  const firstDose = String(item.horaPrimeraDosis || '');
+  const firstDoseDate = String(item.seguimientoBaseDate || '').slice(0, 10);
+  const firstDoseDateValue = firstDoseDate;
+  const firstDoseMinutes = (() => {
+    if (!firstDose || !/^\d{2}:\d{2}$/.test(firstDose)) return null;
+    const [hh, mm] = firstDose.split(':').map((n) => Number(n));
+    if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+    return (hh * 60) + mm;
+  })();
+
+  const formatMinutesToAmPm = (totalMinutes) => {
+    const normalized = ((totalMinutes % (24 * 60)) + (24 * 60)) % (24 * 60);
+    const hours24 = Math.floor(normalized / 60);
+    const minutes = normalized % 60;
+    const period = hours24 >= 12 ? 'PM' : 'AM';
+    const hours12 = hours24 % 12 === 0 ? 12 : hours24 % 12;
+    return `${String(hours12).padStart(2, '0')}:${String(minutes).padStart(2, '0')} ${period}`;
+  };
+
+  const scheduleTimes = Array.from({ length: displayedDoses }, (_, index) => {
+    if (!firstDoseDateValue || firstDoseMinutes === null || intervalMinutes <= 0) {
+      return { timeLabel: '', dateTimeLabel: '' };
+    }
+
+    const [baseYear, baseMonth, baseDay] = firstDoseDateValue.split('-').map((n) => Number(n));
+    if (!Number.isFinite(baseYear) || !Number.isFinite(baseMonth) || !Number.isFinite(baseDay)) {
+      return { timeLabel: '', dateTimeLabel: '' };
+    }
+
+    const [firstHours, firstMinutesOnly] = firstDose.split(':').map((n) => Number(n));
+    const firstDoseDateTime = new Date(baseYear, baseMonth - 1, baseDay, firstHours, firstMinutesOnly, 0, 0);
+    if (!Number.isFinite(firstDoseDateTime.getTime())) {
+      return { timeLabel: '', dateTimeLabel: '' };
+    }
+
+    const doseDateTime = new Date(firstDoseDateTime.getTime() + (index * intervalMinutes * 60 * 1000));
+    const yyyy = doseDateTime.getFullYear();
+    const mm = String(doseDateTime.getMonth() + 1).padStart(2, '0');
+    const dd = String(doseDateTime.getDate()).padStart(2, '0');
+
+    return {
+      timeLabel: formatMinutesToAmPm((doseDateTime.getHours() * 60) + doseDateTime.getMinutes()),
+      dateTimeLabel: `${dd}/${mm}/${yyyy} ${String(doseDateTime.getHours()).padStart(2, '0')}:${String(doseDateTime.getMinutes()).padStart(2, '0')}`,
+    };
+  });
   const currentPharmaIndex = !isSolution ? pharmaItemIds.indexOf(item.id) : -1;
   const canNavigatePharma = !isSolution && pharmaItemIds.length > 1 && currentPharmaIndex >= 0;
   const [isVisible, setIsVisible] = useState(false);
@@ -1354,11 +1604,152 @@ function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPha
                     <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="Principio Activo" value={item.principio || ''} onChange={(e) => updateField('principio', e.target.value)} /></div>
                     <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="Marca Com." value={item.marcaComercial || ''} onChange={(e) => updateField('marcaComercial', e.target.value)} /></div>
                     <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="Dosis" value={item.dosis || ''} onChange={(e) => updateField('dosis', e.target.value)} /></div>
-                    <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="Frecuencia" value={item.frecuencia || ''} onChange={(e) => updateField('frecuencia', e.target.value)} /></div>
+                    <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm">
+                      <label className="fc-label truncate" title="Frecuencia">Frecuencia</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          className="fc-input"
+                          value={frequency.value}
+                          onChange={(e) => updateField('frecuencia', e.target.value)}
+                          placeholder="0"
+                        />
+                        <select
+                          className="fc-input w-[96px]"
+                          value={frequency.unit}
+                          onChange={(e) => updateField('frecuenciaUnidad', e.target.value)}
+                        >
+                          <option value="hrs">hrs</option>
+                          <option value="min">min</option>
+                        </select>
+                      </div>
+                    </div>
                     <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="F. Inicio" type="date" value={item.fechaInicio || ''} onChange={(e) => updateField('fechaInicio', e.target.value)} /></div>
                     {isSuspended && <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="F. Suspensión" type="date" value={item.fechaSuspension || ''} onChange={(e) => updateField('fechaSuspension', e.target.value)} /></div>}
                     <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormSelect label="Estado" value={item.estado || 'Activo'} onChange={(e) => updateStatus(e.target.value)} options={['Activo', 'Suspendido']} /></div>
                   </div>
+                </div>
+
+                <div className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-cyan-50 p-3 sm:p-4 shadow-sm">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center"><Activity className="w-4 h-4" /></div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Seguimiento</p>
+                  </div>
+
+                  {intervalMinutes <= 0 ? (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4" />
+                      Define la frecuencia para generar el seguimiento de dosis en 24 horas.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap items-end gap-3">
+                        <div className="min-w-[170px]">
+                          <label className="fc-label">Fecha de primera dosis</label>
+                          <input
+                            type="date"
+                            className="fc-input"
+                            value={firstDoseDateValue}
+                            onChange={(e) => updateField('seguimientoBaseDate', e.target.value)}
+                          />
+                        </div>
+                        <div className="min-w-[170px]">
+                          <label className="fc-label">Hora de primera dosis</label>
+                          <input
+                            type="time"
+                            className="fc-input"
+                            value={firstDose}
+                            onChange={(e) => updateField('horaPrimeraDosis', e.target.value)}
+                          />
+                        </div>
+                        <div className="min-w-[240px]">
+                          <label className="flex items-center gap-2 text-sm font-semibold text-slate-700 mb-2">
+                            <input
+                              type="checkbox"
+                              className="w-4 h-4 rounded border-slate-300 text-emerald-600"
+                              checked={useManualDoseCount}
+                              onChange={(e) => updateField('seguimientoUsarCantidadDosis', e.target.checked)}
+                            />
+                            Definir cantidad de dosis
+                          </label>
+                          {useManualDoseCount && (
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              className="fc-input"
+                              value={item.seguimientoDosisCantidad || ''}
+                              onChange={(e) => updateField('seguimientoDosisCantidad', e.target.value)}
+                              placeholder="Ej. 5"
+                            />
+                          )}
+                        </div>
+                      </div>
+
+                      {(!firstDose || !firstDoseDateValue) && (
+                        <p className="text-xs text-slate-600">Primero captura fecha y hora de la primera dosis para completar automáticamente las dosis siguientes.</p>
+                      )}
+
+                      {!useManualDoseCount && dosesPerDay > 0 && (
+                        <p className="text-xs text-slate-600">Si no indicas cantidad, se generan automáticamente las dosis según la frecuencia.</p>
+                      )}
+
+                      {useManualDoseCount && !item.seguimientoDosisCantidad && (
+                        <p className="text-xs text-slate-600">Activa la cantidad manual e ingresa el número de dosis para generar los campos.</p>
+                      )}
+
+                      <div className="overflow-x-auto">
+                        <div className="flex gap-2 min-w-max pb-1">
+                          {Array.from({ length: displayedDoses }, (_, index) => (
+                            <div key={`dose-col-${index}`} className="w-[150px] rounded-lg border border-emerald-200 bg-white p-2">
+                              <p className="text-[11px] font-semibold text-emerald-700 mb-1">Dosis #{index + 1}</p>
+                              {index === 0 ? (
+                                <div className="space-y-1">
+                                  <input
+                                    type="date"
+                                    className="fc-input"
+                                    value={firstDoseDateValue}
+                                    onChange={(e) => updateField('seguimientoBaseDate', e.target.value)}
+                                  />
+                                  <input
+                                    type="time"
+                                    className="fc-input"
+                                    value={firstDose}
+                                    onChange={(e) => updateField('horaPrimeraDosis', e.target.value)}
+                                  />
+                                </div>
+                              ) : (
+                                <div className="space-y-1">
+                                  <input
+                                    type="text"
+                                    className="fc-input bg-slate-50"
+                                    value={scheduleTimes[index]?.dateTimeLabel || '--/--/---- --:--'}
+                                    readOnly
+                                  />
+                                  <input
+                                    type="text"
+                                    className="fc-input bg-slate-50"
+                                    value={scheduleTimes[index]?.timeLabel || '--:--'}
+                                    readOnly
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {displayedDoses === 0 && (
+                        <p className="text-xs text-slate-600">No hay dosis para mostrar con la configuración actual.</p>
+                      )}
+
+                      {doseCountBase > displayedDoses && (
+                        <p className="text-[11px] text-slate-500">Se muestran las primeras {displayedDoses} dosis para mantener la vista legible.</p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50 to-fuchsia-50 p-3 sm:p-4 shadow-sm">
