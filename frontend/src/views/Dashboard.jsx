@@ -18,7 +18,7 @@ const getNextReminderDateTime = (minutes = 30) => {
   };
 };
 
-export default function Dashboard({ patients, dilutionsTable, onDilutionsTableChange, reminders = [], onCreateReminder, onSelect, onCreate, onCreatePreRegister, onRegisterPreRegistered, onDelete, onRestore, onHardDelete, currentUser, users, helpers, constants }) {
+export default function Dashboard({ patients, dilutionsTable, onDilutionsTableChange, reminders = [], onCreateReminder, onSelect, onCreate, onDelete, onRestore, onHardDelete, currentUser, users, helpers, constants }) {
   const { calculateAge, calculateDaysOfUse, calculateCrCl, getTfgColorClass, listOtherActiveUsers, formatExcelDate, exportToCSV } = helpers;
   const { ADULTO_MAYOR_EDAD, CATEGORIAS_PRM, MESES, ANIOS } = constants;
   const [dashboardTab, setDashboardTab] = useState('pacientes'); 
@@ -160,6 +160,12 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
     }
   }, [activePatientsForReminders, reminderForm.patientId]);
 
+  useEffect(() => {
+    if (!isDilutionAdmin && dashboardTab === 'diluciones') {
+      setDashboardTab('pacientes');
+    }
+  }, [dashboardTab, isDilutionAdmin]);
+
   const handleCreateReminder = async () => {
     if (typeof onCreateReminder !== 'function') return;
 
@@ -187,18 +193,14 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
     return match ? Number(match[0]) : null;
   };
 
-  const effectiveView = dashboardTab !== 'pacientes' && view === 'preregistrados' ? 'activos' : view;
-
   // Lógica de Filtros y Vistas General
   const filteredPatients = patients.filter(p => {
-    if (effectiveView === 'papelera') {
+    if (view === 'papelera') {
       if (!p.deleted) return false;
     } else {
       if (p.deleted) return false;
-      if (effectiveView === 'preregistrados' && p.preRegistro !== true) return false;
-      if (effectiveView !== 'preregistrados' && p.preRegistro === true) return false;
-      if (effectiveView === 'activos' && p.demographics.egreso) return false;
-      if (effectiveView === 'egresados' && !p.demographics.egreso) return false;
+      if (view === 'activos' && p.demographics.egreso) return false;
+      if (view === 'egresados' && !p.demographics.egreso) return false;
     }
 
     const dateToFilter = p.demographics.ingreso;
@@ -271,11 +273,10 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
   }, [filteredPatients, patientColumnFilter]);
 
   // Métricas de Pacientes
-  const activeCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.preRegistro !== true).length;
-  const preRegisteredCount = patients.filter(p => !p.deleted && p.preRegistro === true).length;
+  const activeCount = patients.filter(p => !p.deleted && !p.demographics.egreso).length;
   const dischargedCount = patients.filter(p => !p.deleted && p.demographics.egreso).length;
-  const atbCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.preRegistro !== true && p.perfilFarmaco.some(f => f.categoria === 'Antibiótico' && f.estado === 'Activo')).length;
-  const altoRiesgoCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.preRegistro !== true && p.perfilFarmaco.some(f => f.categoria === 'Alto Riesgo' && f.estado === 'Activo')).length;
+  const atbCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.perfilFarmaco.some(f => f.categoria === 'Antibiótico' && f.estado === 'Activo')).length;
+  const altoRiesgoCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.perfilFarmaco.some(f => f.categoria === 'Alto Riesgo' && f.estado === 'Activo')).length;
 
   // Lógica para Vista de PRM
   let allPrms = [];
@@ -327,11 +328,28 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
   const ingresoCount = filteredPatients.filter(p => p.conciliacion.ingresoNA || p.conciliacion.ingreso.length > 0).length;
   const egresoCount = filteredPatients.filter(p => p.conciliacion.egresoNA || p.conciliacion.egreso.length > 0).length;
 
+  const formatConciliacionEgresoExport = (conciliacion = {}) => {
+    if (conciliacion.egresoNA) {
+      const motivo = String(conciliacion.egresoNAMotivo || '').trim();
+      return motivo ? `NA - Motivo: ${motivo}` : 'NA';
+    }
+
+    return Array.isArray(conciliacion.egreso) && conciliacion.egreso.length > 0 ? 'Sí' : 'No';
+  };
+
+  const getGrupoEtarioExport = (years) => {
+    const age = Number(years);
+    if (!Number.isFinite(age) || age < 0) return '';
+    if (age < 18) return 'Niño';
+    if (age >= ADULTO_MAYOR_EDAD) return 'Adulto mayor';
+    return 'Adulto';
+  };
+
   const handleExportGeneral = () => {
     const rows = [
       [
         "Identificador interno (FV)", "N° Expediente", "Habitación", "Nombre del paciente", "Fecha de nacimiento", 
-        "Edad", "Genero", "Episodio", "Fecha de ingreso DD/MM/AA HH:MM", 
+        "Edad", "Grupo etario", "Genero", "Episodio", "Fecha de ingreso DD/MM/AA HH:MM", 
         "Fecha de egreso DD/MM/AA HH:MM", "Días internado", "Diagnostico", 
         "Motivo de ingreso / Procedimiento", "Tipo de paciente", "Medico tratante", 
         "Alergias", "Especialidad", "Observaciones Generales", "Idoneidad (1ra Dosis)", "Conc. Ingreso", "Conc. Cambio Área", 
@@ -341,13 +359,14 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
     
     filteredPatients.forEach(p => {
       const { years } = calculateAge(p.demographics.fechaNacimiento);
+      const grupoEtario = getGrupoEtarioExport(years);
       const estancia = calculateDaysOfUse(p.demographics.ingreso, p.demographics.egreso);
       
       const valIdoneidad = p.perfilFarmacoMeta?.evaluadoPrevioPrimeraDosis ? 'Sí' : 'No';
       const cIng = p.conciliacion.ingresoNA ? 'NA' : (p.conciliacion.ingreso.length > 0 ? 'Sí' : 'No');
       const cArea = p.conciliacion.transicionAreaNA ? 'NA' : (p.conciliacion.transicionesArea?.length > 0 ? 'Sí' : 'No');
       const cMedico = p.conciliacion.transicionMedicoNA ? 'NA' : (p.conciliacion.transicionMedico ? 'Sí' : 'No');
-      const cEgr = p.conciliacion.egresoNA ? 'NA' : (p.conciliacion.egreso.length > 0 ? 'Sí' : 'No');
+      const cEgr = formatConciliacionEgresoExport(p.conciliacion || {});
       
       const activos = p.perfilFarmaco.filter(f => f.estado === 'Activo');
       const poli = activos.length > 5 ? 'Sí' : 'No';
@@ -362,7 +381,7 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
 
       rows.push([
         p.demographics.identificadorInterno || p.id, p.demographics.numeroPaciente, p.demographics.habitacion, p.demographics.nombre, p.demographics.fechaNacimiento,
-        years, p.demographics.genero, p.demographics.numeroEpisodio,
+        years, grupoEtario, p.demographics.genero, p.demographics.numeroEpisodio,
         formatExcelDate(p.demographics.ingreso), formatExcelDate(p.demographics.egreso),
         estancia, p.demographics.diagnosticoPrincipal, p.demographics.motivoIngreso,
         p.demographics.tipoPaciente, p.demographics.medico, p.demographics.alergias, p.demographics.especialidad, p.demographics.observacionesGenerales,
@@ -374,7 +393,7 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
 
   const getGeneralExportHeader = () => ([
     "Identificador interno (FV)", "N° Expediente", "Habitación", "Nombre del paciente", "Fecha de nacimiento",
-    "Edad", "Genero", "Episodio", "Fecha de ingreso DD/MM/AA HH:MM",
+    "Edad", "Grupo etario", "Genero", "Episodio", "Fecha de ingreso DD/MM/AA HH:MM",
     "Fecha de egreso DD/MM/AA HH:MM", "Días internado", "Diagnostico",
     "Motivo de ingreso / Procedimiento", "Tipo de paciente", "Medico tratante",
     "Alergias", "Especialidad", "Observaciones Generales", "Idoneidad (1ra Dosis)", "Conc. Ingreso", "Conc. Cambio Área",
@@ -383,13 +402,14 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
 
   const buildGeneralExportRow = (p) => {
     const { years } = calculateAge(p.demographics.fechaNacimiento);
+    const grupoEtario = getGrupoEtarioExport(years);
     const estancia = calculateDaysOfUse(p.demographics.ingreso, p.demographics.egreso);
 
     const valIdoneidad = p.perfilFarmacoMeta?.evaluadoPrevioPrimeraDosis ? 'Sí' : 'No';
     const cIng = p.conciliacion.ingresoNA ? 'NA' : (p.conciliacion.ingreso.length > 0 ? 'Sí' : 'No');
     const cArea = p.conciliacion.transicionAreaNA ? 'NA' : (p.conciliacion.transicionesArea?.length > 0 ? 'Sí' : 'No');
     const cMedico = p.conciliacion.transicionMedicoNA ? 'NA' : (p.conciliacion.transicionMedico ? 'Sí' : 'No');
-    const cEgr = p.conciliacion.egresoNA ? 'NA' : (p.conciliacion.egreso.length > 0 ? 'Sí' : 'No');
+    const cEgr = formatConciliacionEgresoExport(p.conciliacion || {});
 
     const activos = p.perfilFarmaco.filter((f) => f.estado === 'Activo');
     const poli = activos.length > 5 ? 'Sí' : 'No';
@@ -404,7 +424,7 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
 
     return [
       p.demographics.identificadorInterno || p.id, p.demographics.numeroPaciente, p.demographics.habitacion, p.demographics.nombre, p.demographics.fechaNacimiento,
-      years, p.demographics.genero, p.demographics.numeroEpisodio,
+      years, grupoEtario, p.demographics.genero, p.demographics.numeroEpisodio,
       formatExcelDate(p.demographics.ingreso), formatExcelDate(p.demographics.egreso),
       estancia, p.demographics.diagnosticoPrincipal, p.demographics.motivoIngreso,
       p.demographics.tipoPaciente, p.demographics.medico, p.demographics.alergias, p.demographics.especialidad, p.demographics.observacionesGenerales,
@@ -750,9 +770,11 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
            <button onClick={() => setDashboardTab('calidad')} className={`shrink-0 pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'calidad' ? 'border-b-4 border-emerald-500 font-bold text-emerald-700' : 'text-slate-500 hover:text-slate-700'}`}>
              <CheckSquare className="w-5 h-5 mr-2"/> Calidad y Conciliación
            </button>
-           <button onClick={() => setDashboardTab('diluciones')} className={`shrink-0 pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'diluciones' ? 'border-b-4 border-cyan-500 font-bold text-cyan-700' : 'text-slate-500 hover:text-slate-700'}`}>
-             <TestTube className="w-5 h-5 mr-2"/> Tabla de Diluciones
-           </button>
+           {isDilutionAdmin && (
+             <button onClick={() => setDashboardTab('diluciones')} className={`shrink-0 pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'diluciones' ? 'border-b-4 border-cyan-500 font-bold text-cyan-700' : 'text-slate-500 hover:text-slate-700'}`}>
+               <TestTube className="w-5 h-5 mr-2"/> Tabla de Diluciones
+             </button>
+           )}
            <button onClick={() => setDashboardTab('recordatorios')} className={`shrink-0 pb-3 px-2 text-sm sm:text-base lg:text-lg transition-colors flex items-center ${dashboardTab === 'recordatorios' ? 'border-b-4 border-fuchsia-500 font-bold text-fuchsia-700' : 'text-slate-500 hover:text-slate-700'}`}>
              <Bell className="w-5 h-5 mr-2"/> Recordatorios
            </button>
@@ -765,8 +787,8 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-blue-500">
                 <div className="bg-blue-50 p-3 rounded-lg mr-4"><Users className="w-8 h-8 text-blue-600" /></div>
                 <div>
-                  <p className="text-sm font-medium text-slate-500">{view === 'egresados' ? 'Total Pacientes Egresados' : view === 'preregistrados' ? 'Total Pre-registrados' : 'Total Pacientes Activos'}</p>
-                  <p className="text-3xl font-black text-slate-800">{view === 'egresados' ? dischargedCount : view === 'preregistrados' ? preRegisteredCount : activeCount}</p>
+                  <p className="text-sm font-medium text-slate-500">{view === 'egresados' ? 'Total Pacientes Egresados' : 'Total Pacientes Activos'}</p>
+                  <p className="text-3xl font-black text-slate-800">{view === 'egresados' ? dischargedCount : activeCount}</p>
                 </div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex items-center border-l-4 border-l-orange-500">
@@ -783,7 +805,6 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
             <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-6 flex flex-col lg:flex-row justify-between lg:items-center gap-4">
               <div className="flex flex-wrap gap-1 bg-slate-100 p-1 rounded-lg w-full lg:w-auto">
                 <button onClick={() => setView('activos')} className={`px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${view === 'activos' ? 'bg-white text-blue-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Pacientes Activos</button>
-                <button onClick={() => setView('preregistrados')} className={`px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${view === 'preregistrados' ? 'bg-white text-blue-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Pre-registrados</button>
                 <button onClick={() => setView('egresados')} className={`px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-colors ${view === 'egresados' ? 'bg-white text-blue-700 shadow-sm border border-slate-200' : 'text-slate-600 hover:text-slate-800'}`}>Egresados</button>
                 <button onClick={() => setView('papelera')} className={`px-3 sm:px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-colors flex items-center ${view === 'papelera' ? 'bg-red-50 text-red-700 shadow-sm border border-red-200' : 'text-slate-600 hover:text-red-600'}`}><Trash2 className="w-4 h-4 mr-1"/> Papelera</button>
               </div>
@@ -803,7 +824,6 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
                 <button onClick={openGeneralExportModal} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg flex items-center font-medium shadow-sm transition text-sm" title="Exportar Demográficos y Clínicos"><FileSpreadsheet className="w-4 h-4 mr-2" /> Exportar General</button>
 
                 {view !== 'papelera' && <button onClick={onCreate} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center font-medium shadow-sm transition text-sm"><UserPlus className="w-4 h-4 mr-2" /> Nuevo</button>}
-                {view !== 'papelera' && <button onClick={onCreatePreRegister} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg flex items-center font-medium shadow-sm transition text-sm"><Plus className="w-4 h-4 mr-2" /> Pre-Registro</button>}
               </div>
             </div>
 
@@ -871,7 +891,9 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
                     });
                     const hasATB = atbActivosList.length > 0;
 
-                    const hasAislamiento = p.microbiologia && p.microbiologia.some(m => m.microorganismo && m.microorganismo.trim() !== '');
+                    const hasMicrobiologia = Array.isArray(p.microbiologia) && p.microbiologia.length > 0;
+                    const hasAislamiento = hasMicrobiologia && p.microbiologia.some(m => m.microorganismo && m.microorganismo.trim() !== '');
+                    const aislamientoTooltip = hasAislamiento ? 'Cultivo POSITIVO' : 'Cultivo pendiente';
                     const idoneidadOk = p.perfilFarmacoMeta?.evaluadoPrevioPrimeraDosis;
 
                     // LÓGICA DE PRESENCIA COLABORATIVA (Sustituye al candado)
@@ -887,8 +909,6 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
                     } else if (p.deleted) {
                       rowColor += "bg-slate-100 opacity-70";
                     }
-
-                    const isPreRegistered = p.preRegistro === true;
 
                     return (
                       <tr key={p.id} className={rowColor} onClick={() => {
@@ -909,14 +929,13 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
                           <div className="flex space-x-1.5 mt-1 flex-wrap">
                             {/* ETIQUETA COLABORATIVA EN LUGAR DE CANDADO ROJO */}
                             {otherActiveUsers.length > 0 && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800 mb-1" title={`Editando: ${otherNames}`}><Users className="w-3 h-3 mr-1"/> EDITANDO ({otherActiveUsers.length})</span>}
-                            {isPreRegistered && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-200 text-indigo-800 mb-1">PRE-REGISTRADO</span>}
                             {hasAdultoMayor && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 mb-1">ADULTO MAYOR ({ADULTO_MAYOR_EDAD}+)</span>}
-                            {hasPolimedicado && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-200 text-amber-900 mb-1">PACIENTE POLIMEDICADO +5</span>}
+                            {hasPolimedicado && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-200 text-amber-900 mb-1">POLIMEDICADO +5</span>}
                             {hasAlergias && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-600 text-white mb-1" title={p.demographics.alergias}>ALERGIAS</span>}
                             {idoneidadOk && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-200 text-green-800 mb-1" title="Idoneidad validada previo a primera dosis"><CheckCircle className="w-3 h-3 mr-1"/> IDONEIDAD OK</span>}
                             {hasAltoRiesgo && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-200 text-red-800 mb-1">ALTO RIESGO</span>}
                             {hasATB && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-200 text-orange-800 mb-1">ATB ({maxDiasATB} d)</span>}
-                            {hasAislamiento && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-200 text-purple-800 mb-1" title="Cultivo Positivo"><Bug className="w-3 h-3 mr-1"/> AISLAMIENTO</span>}
+                            {hasMicrobiologia && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-200 text-purple-800 mb-1" title={aislamientoTooltip}><Bug className="w-3 h-3 mr-1"/> AISLAMIENTO</span>}
                           </div>
                         </td>
                         <td className="p-3">
@@ -942,19 +961,6 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
                             </div>
                           ) : (
                             <div className="flex items-center gap-2">
-                              {view === 'preregistrados' && (
-                                <button
-                                  disabled={otherActiveUsers.length > 0}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (otherActiveUsers.length === 0) onRegisterPreRegistered?.(p.id);
-                                  }}
-                                  className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${otherActiveUsers.length > 0 ? 'text-slate-300 cursor-not-allowed border border-slate-200' : 'text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100'}`}
-                                  title={otherActiveUsers.length > 0 ? 'En uso por otros usuarios' : 'Registrar y mover a pacientes activos'}
-                                >
-                                  Registrar
-                                </button>
-                              )}
                               <button disabled={otherActiveUsers.length > 0} onClick={(e) => { e.stopPropagation(); if(otherActiveUsers.length === 0) onDelete(p.id); }} className={`p-2 rounded-md transition-colors ${otherActiveUsers.length > 0 ? 'text-slate-300 cursor-not-allowed' : 'text-slate-400 hover:bg-red-100 hover:text-red-600'}`} title={otherActiveUsers.length > 0 ? 'En uso por otros usuarios' : 'Mover a papelera'}><Trash2 className="w-5 h-5" /></button>
                             </div>
                           )}
@@ -1443,7 +1449,7 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
         )}
 
         {/* ---------------- VISTA TABLA DE DILUCIONES ---------------- */}
-        {dashboardTab === 'diluciones' && (
+        {isDilutionAdmin && dashboardTab === 'diluciones' && (
           <>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex items-center border-l-4 border-l-cyan-500">

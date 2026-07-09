@@ -6,12 +6,14 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleHelp,
+  Copy,
   Eye,
   FileText,
   FileWarning,
   Layers,
   ListChecks,
   Microscope,
+  Pill,
   Plus,
   ShieldAlert,
   Trash2,
@@ -487,6 +489,7 @@ function ConciliationTab({ patient, updatePatient }) {
   };
   const [showInterviewModal, setShowInterviewModal] = useState(false);
   const [transicionAreaValidationError, setTransicionAreaValidationError] = useState('');
+  const [pendingSendToPharmaItem, setPendingSendToPharmaItem] = useState(null);
 
   const handleAnswer = (qId, value) => updatePatient({ interview: { ...i, [qId]: value } });
   
@@ -512,6 +515,51 @@ function ConciliationTab({ patient, updatePatient }) {
     updatePatient({ conciliacion: { ...conc, [type]: list.map(item => item.id === id ? { ...item, [field]: value } : item) } });
   };
   const removeItem = (type, id) => updatePatient({ conciliacion: { ...conc, [type]: (conc[type] || []).filter(item => item.id !== id) } });
+
+  const confirmSendIngresoItemToPharmacotherapy = (item) => {
+    if (!item) return;
+
+    const noteParts = [
+      item.observacion ? `Obs. conciliación: ${item.observacion}` : '',
+      item.desdeCuando ? `Desde cuándo: ${item.desdeCuando}` : '',
+      item.ultimaTomaMedicamento ? `Última toma: ${item.ultimaTomaMedicamento}` : '',
+      item.activo ? `Estado conciliación: ${item.activo}` : '',
+    ].filter(Boolean);
+
+    const newPharmaItem = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      categoria: '',
+      principio: item.principio || '',
+      marcaComercial: item.marcaComercial || '',
+      presentacion: '',
+      dosis: item.dosis || '',
+      via: item.via || '',
+      frecuencia: item.frecuencia || '',
+      volumen: '',
+      tiempo: '',
+      velocidad: '',
+      fechaInicio: new Date().toISOString().split('T')[0],
+      estado: 'Activo',
+      idoneidad: 'Pendiente',
+      fechaSuspension: '',
+      horaPrimeraDosis: '',
+      seguimientoUsarCantidadDosis: false,
+      seguimientoDosisCantidad: '',
+      seguimientoBaseDate: '',
+      observaciones: noteParts.join(' | '),
+      prn: false,
+      prnSituacion: '',
+      quirofano: false,
+    };
+
+    updatePatient({ perfilFarmaco: [...(patient.perfilFarmaco || []), newPharmaItem] });
+    setPendingSendToPharmaItem(null);
+  };
+
+  const requestSendIngresoItemToPharmacotherapy = (item) => {
+    if (!item) return;
+    setPendingSendToPharmaItem(item);
+  };
 
   const toggleNA = (field) => {
     const nextValue = !conc[field];
@@ -546,6 +594,17 @@ function ConciliationTab({ patient, updatePatient }) {
     const target = rows.find((row) => row.id === id);
     if (!target) {
       setTransicionAreaValidationError('No se encontró el cambio de área a validar.');
+      return;
+    }
+
+    if (target.validado === true) {
+      setTransicionAreaValidationError('');
+      updatePatient({
+        conciliacion: {
+          ...conc,
+          transicionesArea: rows.map((row) => (row.id === id ? { ...row, validado: false } : row)),
+        },
+      });
       return;
     }
 
@@ -615,6 +674,31 @@ function ConciliationTab({ patient, updatePatient }) {
         </div>
       )}
 
+      {pendingSendToPharmaItem && (
+        <div className="fixed inset-0 bg-slate-900/60 z-50 p-4 flex items-center justify-center print:hidden" onClick={() => setPendingSendToPharmaItem(null)}>
+          <div className="w-full max-w-md rounded-xl border border-blue-200 bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-blue-100 bg-blue-50 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-white border border-blue-200 text-blue-700 flex items-center justify-center">
+                <Layers className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-800">Enviar a Perfil Farmacoterapéutico</h3>
+                <p className="text-xs text-slate-600">Se duplicará el medicamento en el perfil farmacoterapéutico.</p>
+              </div>
+            </div>
+            <div className="px-5 py-4 space-y-2">
+              <p className="text-sm text-slate-700 leading-relaxed">
+                ¿Deseas enviar <span className="font-semibold text-slate-900">"{pendingSendToPharmaItem.principio || 'este medicamento'}"</span> al Perfil Farmacoterapéutico?
+              </p>
+            </div>
+            <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2">
+              <button onClick={() => setPendingSendToPharmaItem(null)} className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 bg-white hover:bg-slate-100 font-medium">Cancelar</button>
+              <button onClick={() => confirmSendIngresoItemToPharmacotherapy(pendingSendToPharmaItem)} className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium">Sí, enviar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <section className="fc-panel print:bg-transparent print:border-none print:p-0 print:shadow-none">
         <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center border-b pb-2 mb-2">
           <h2 className="text-2xl font-bold text-slate-800">2. Conciliación al Ingreso</h2>
@@ -643,7 +727,7 @@ function ConciliationTab({ patient, updatePatient }) {
         {conc.ingresoNA ? (
           <div className="p-4 bg-slate-100 text-slate-500 rounded border border-slate-200 italic print:bg-transparent">Conciliación al ingreso marcada como No Aplica.</div>
         ) : (
-          <ConciliationTable items={conc.ingreso || []} type="ingreso" onUpdate={updateItem} onRemove={removeItem} />
+          <ConciliationTable items={conc.ingreso || []} type="ingreso" onUpdate={updateItem} onRemove={removeItem} onSendToPharma={requestSendIngresoItemToPharmacotherapy} enableKeyboardNavigation />
         )}
       </section>
 
@@ -682,7 +766,7 @@ function ConciliationTab({ patient, updatePatient }) {
                     <div className="flex-1 w-full"><FormInput label="Área de Origen" value={t.origen} onChange={(e) => updateTransicionArea(t.id, 'origen', e.target.value)} placeholder="Ej. Urgencias" /></div>
                     <div className="flex-1 w-full"><FormInput label="Área de Destino" value={t.destino} onChange={(e) => updateTransicionArea(t.id, 'destino', e.target.value)} placeholder="Ej. Piso 3" /></div>
                     <div className="flex items-center gap-1 print:hidden">
-                      <button onClick={() => validateSingleTransicionArea(t.id)} className="p-2 mb-1 text-emerald-600 hover:bg-emerald-100 rounded transition" title="Validar cambio">
+                      <button onClick={() => validateSingleTransicionArea(t.id)} className="p-2 mb-1 text-emerald-600 hover:bg-emerald-100 rounded transition" title={t.validado ? 'Quitar validación' : 'Validar cambio'}>
                         <CheckCircle className="w-5 h-5"/>
                       </button>
                       <button onClick={() => removeTransicionArea(t.id)} className="p-2 mb-1 text-red-500 hover:bg-red-100 rounded transition" title="Eliminar cambio"><Trash2 className="w-5 h-5"/></button>
@@ -750,12 +834,12 @@ function ConciliationTab({ patient, updatePatient }) {
   );
 }
 
-function ConciliationTable({ items, type, onUpdate, onRemove }) {
+function ConciliationTable({ items, type, onUpdate, onRemove, onSendToPharma, enableKeyboardNavigation = false }) {
   const isIngreso = type === 'ingreso';
   const emptyColSpan = isIngreso ? 10 : 8;
 
   return (
-    <div className="overflow-x-auto overscroll-x-contain print:overflow-visible">
+    <div className="overflow-x-auto overscroll-x-contain print:overflow-visible" onKeyDownCapture={enableKeyboardNavigation ? handleTableArrowNavigation : undefined}>
       <table className="min-w-[1120px] text-xs sm:text-sm border-collapse bg-white border border-slate-200 shadow-sm rounded-lg print:shadow-none print:border-slate-300">
         <thead className="bg-slate-50 border-b print:bg-slate-100">
           <tr>
@@ -805,7 +889,18 @@ function ConciliationTable({ items, type, onUpdate, onRemove }) {
                 </td>
               )}
               <td className="p-1"><input type="text" className="w-full border-slate-300 rounded text-sm print:border-none print:bg-transparent" value={item.observacion} onChange={(e) => onUpdate(type, item.id, 'observacion', e.target.value)} /></td>
-              <td className="p-1 text-center print:hidden"><button onClick={() => onRemove(type, item.id)} className="text-red-500 hover:text-red-700 p-1"><Trash2 className="w-4 h-4" /></button></td>
+              <td className="p-1 text-center print:hidden">
+                <div className="flex items-center justify-center gap-1">
+                  {isIngreso && typeof onSendToPharma === 'function' && (
+                    <button onClick={() => onSendToPharma(item)} className="text-blue-600 hover:text-blue-800 p-1" title="Enviar al perfil farmacoterapéutico">
+                      <Layers className="w-4 h-4" />
+                    </button>
+                  )}
+                  <button onClick={() => onRemove(type, item.id)} className="text-red-500 hover:text-red-700 p-1" title="Eliminar">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -814,7 +909,7 @@ function ConciliationTable({ items, type, onUpdate, onRemove }) {
   );
 }
 
-function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
+function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTable }) {
   const items = patient.perfilFarmaco || [];
   const solItems = patient.solucionesIV || [];
   const conc = patient.conciliacion || {
@@ -832,6 +927,10 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
   const meta = patient.perfilFarmacoMeta || { evaluadoPrevioPrimeraDosis: false };
   const [detailModal, setDetailModal] = useState({ open: false, type: 'pharma', itemId: '' });
   const [deleteModal, setDeleteModal] = useState({ open: false, type: 'pharma', itemId: '', label: '' });
+  const [reviewedMedications, setReviewedMedications] = useState({});
+  const [showDilutionsModal, setShowDilutionsModal] = useState(false);
+  const [dilutionSearch, setDilutionSearch] = useState('');
+  const [medDilutionModal, setMedDilutionModal] = useState({ open: false, medicationName: '', rows: [] });
   const persistedPharmaById = useMemo(
     () => new Map((sourcePatient?.perfilFarmaco || []).map((item) => [item.id, item])),
     [sourcePatient?.perfilFarmaco],
@@ -840,8 +939,116 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
     () => new Map((sourcePatient?.solucionesIV || []).map((item) => [item.id, item])),
     [sourcePatient?.solucionesIV],
   );
+  const dilutionColumns = useMemo(() => {
+    if (Array.isArray(dilutionsTable?.columns) && dilutionsTable.columns.length > 0) {
+      return dilutionsTable.columns;
+    }
+    return [
+      'MEDICAMENTO',
+      'MARCA COMERCIAL',
+      'PRESENTACION',
+      'RECONSTITUCION',
+      'INTRAMUSCULAR',
+      'ADMINISTRACION',
+      'SOLUCIONES COMPATIBLES',
+      'TIEMPO DE INFUSION',
+      'SEGURIDAD',
+      'TIEMPO DE ESTABILIDAD',
+    ];
+  }, [dilutionsTable?.columns]);
+  const dilutionRows = useMemo(() => (Array.isArray(dilutionsTable?.rows) ? dilutionsTable.rows : []), [dilutionsTable?.rows]);
+  const filteredDilutionRows = useMemo(() => {
+    const term = String(dilutionSearch || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
+    if (!term) return dilutionRows;
 
-  const PHARMA_MODAL_FIELDS = ['presentacion', 'via', 'volumen', 'tiempo', 'velocidad', 'idoneidad', 'fechaSuspension', 'observaciones', 'prn', 'prnSituacion', 'horaPrimeraDosis', 'seguimientoUsarCantidadDosis', 'seguimientoDosisCantidad', 'seguimientoBaseDate'];
+    return dilutionRows.filter((row) => {
+      const medValue = String(row?.MEDICAMENTO || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase();
+      return medValue.includes(term);
+    });
+  }, [dilutionRows, dilutionSearch]);
+
+  const normalizeMedicationName = useCallback((value = '') => String(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim(), []);
+
+  const buildMedicationLookupKeys = useCallback((value = '') => {
+    const normalized = normalizeMedicationName(value);
+    if (!normalized) return [];
+
+    const withoutDose = normalized
+      .replace(/\b\d+(?:[\.,]\d+)?\s*(?:mg|g|mcg|ug|ml|l|ui|iu|%)\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const primary = withoutDose
+      .split(/\s*[\/+,;|-]\s*/)
+      .map((part) => part.trim())
+      .filter((part) => part.length >= 1);
+
+    const keys = [normalized, withoutDose, ...primary]
+      .map((part) => part.trim())
+      .filter((part) => part.length >= 1);
+
+    return Array.from(new Set(keys));
+  }, [normalizeMedicationName]);
+
+  const tokenizeMedicationName = useCallback((value = '') => {
+    const normalized = normalizeMedicationName(value);
+    if (!normalized) return [];
+    return normalized.split(' ').map((token) => token.trim()).filter(Boolean);
+  }, [normalizeMedicationName]);
+
+  const findDilutionRowsByMedication = useCallback((medicationName = '') => {
+    const normalizedTarget = normalizeMedicationName(medicationName);
+    const targetKeys = buildMedicationLookupKeys(medicationName);
+    const targetTokens = tokenizeMedicationName(medicationName);
+    if (!normalizedTarget || targetKeys.length === 0) return [];
+
+    return dilutionRows.filter((row) => {
+      const rowName = String(row?.MEDICAMENTO || '').trim();
+      if (!rowName) return false;
+
+      const normalizedRowName = normalizeMedicationName(rowName);
+      const rowKeys = buildMedicationLookupKeys(rowName);
+      const rowTokens = tokenizeMedicationName(rowName);
+      if (rowKeys.length === 0) return false;
+
+      const exactKeyMatch = rowKeys.some((rowKey) => targetKeys.includes(rowKey));
+      if (exactKeyMatch) return true;
+
+      const tokensContained = targetTokens.length > 0 && targetTokens.every((token) => rowTokens.includes(token));
+      if (tokensContained) return true;
+
+      // For very short names (e.g. "a"), also match when the first token in dilutions equals the target.
+      if (normalizedTarget.length <= 2 && rowTokens.length > 0) {
+        return rowTokens[0] === normalizedTarget;
+      }
+
+      return normalizedRowName === normalizedTarget;
+    });
+  }, [buildMedicationLookupKeys, dilutionRows, normalizeMedicationName, tokenizeMedicationName]);
+
+  const openMedicationDilutionModal = useCallback((medicationName = '') => {
+    const rows = findDilutionRowsByMedication(medicationName);
+    setMedDilutionModal({
+      open: true,
+      medicationName: String(medicationName || '').trim(),
+      rows,
+    });
+  }, [findDilutionRowsByMedication]);
+
+  const PHARMA_MODAL_FIELDS = ['presentacion', 'via', 'volumen', 'tiempo', 'velocidad', 'idoneidad', 'fechaSuspension', 'observaciones', 'prn', 'prnSituacion', 'quirofano', 'horaPrimeraDosis', 'seguimientoUsarCantidadDosis', 'seguimientoDosisCantidad', 'seguimientoBaseDate'];
   const PHARMA_DEFAULTS = {
     presentacion: '',
     via: '',
@@ -858,6 +1065,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
     observaciones: '',
     prn: false,
     prnSituacion: '',
+    quirofano: false,
   };
 
   const SOL_MODAL_FIELDS = ['tiempo', 'velocidad', 'frecuencia', 'fechaSuspension'];
@@ -911,7 +1119,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
   };
 
   const addItem = () => {
-    const newItem = { id: Date.now().toString(), categoria: '', principio: '', marcaComercial: '', presentacion: '', dosis: '', via: '', frecuencia: '', volumen: '', tiempo: '', velocidad: '', fechaInicio: new Date().toISOString().split('T')[0], estado: 'Activo', idoneidad: 'Pendiente', fechaSuspension: '', horaPrimeraDosis: '', seguimientoUsarCantidadDosis: false, seguimientoDosisCantidad: '', seguimientoBaseDate: '', observaciones: '', prn: false, prnSituacion: '' };
+    const newItem = { id: Date.now().toString(), categoria: '', principio: '', marcaComercial: '', presentacion: '', dosis: '', via: '', frecuencia: '', volumen: '', tiempo: '', velocidad: '', fechaInicio: new Date().toISOString().split('T')[0], estado: 'Activo', idoneidad: 'Pendiente', fechaSuspension: '', horaPrimeraDosis: '', seguimientoUsarCantidadDosis: false, seguimientoDosisCantidad: '', seguimientoBaseDate: '', observaciones: '', prn: false, prnSituacion: '', quirofano: false };
     updatePatient({ perfilFarmaco: [...items, newItem] });
   };
 
@@ -988,6 +1196,29 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
 
   const removeItem = (id) => updatePatient({ perfilFarmaco: items.filter((item) => item.id !== id) });
 
+  const duplicateMedication = (sourceItem) => {
+    if (!sourceItem) return;
+    const sourceIndex = items.findIndex((item) => item.id === sourceItem.id);
+    if (sourceIndex < 0) return;
+
+    const duplicatedItem = {
+      ...sourceItem,
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      ultimaDosisNotificadaAt: 0,
+    };
+
+    const nextItems = [...items];
+    nextItems.splice(sourceIndex + 1, 0, duplicatedItem);
+    updatePatient({ perfilFarmaco: nextItems });
+  };
+
+  const toggleMedicationReviewed = (id) => {
+    setReviewedMedications((prev) => ({
+      ...prev,
+      [id]: !prev[id],
+    }));
+  };
+
   const addSolucion = () => {
     const newItem = { id: Date.now().toString(), solucion: '', volumen: '', tiempo: '', velocidad: '', frecuencia: '', fechaInicio: new Date().toISOString().split('T')[0], estado: 'Activo', fechaSuspension: '' };
     updatePatient({ solucionesIV: [...solItems, newItem] });
@@ -1029,6 +1260,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
       source.presentacion ? `Presentación: ${source.presentacion}` : '',
       source.observaciones || '',
       source.prn === true && source.prnSituacion ? `PRN: ${source.prnSituacion}` : '',
+      source.quirofano === true ? 'Marcado para Quirofano' : '',
     ].filter(Boolean);
 
     const newEgresoItem = {
@@ -1130,14 +1362,82 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
       <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center border-b pb-2">
         <h2 className="text-2xl font-bold text-slate-800">Prescripciones Intrahospitalarias</h2>
         <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+          <button onClick={() => setShowDilutionsModal(true)} className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><FileText className="w-4 h-4 mr-1" /> Tabla de Diluciones</button>
           <button onClick={addSolucion} className="w-full sm:w-auto bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Solución IV</button>
           <button onClick={addItem} className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
         </div>
       </div>
 
-      <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-800 flex items-center gap-2">
-        <span className="inline-block w-3 h-3 rounded-full bg-violet-500" aria-hidden="true"></span>
-        Si una fila aparece en morado, significa que es un medicamento PRN (Por Razón Necesaria).
+      {showDilutionsModal && (
+        <div className="fixed inset-0 z-[95] bg-slate-900/60 backdrop-blur-[1px] flex items-center justify-center p-4 print:hidden" onClick={() => setShowDilutionsModal(false)}>
+          <div className="w-full max-w-7xl max-h-[92vh] rounded-xl border border-slate-200 bg-white shadow-2xl overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="px-4 py-3 border-b border-slate-200 bg-indigo-600 text-white flex items-center justify-between gap-3">
+              <h3 className="font-bold text-base sm:text-lg">Tabla de Diluciones</h3>
+              <button onClick={() => setShowDilutionsModal(false)} className="text-indigo-100 hover:text-white" aria-label="Cerrar tabla de diluciones">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="px-4 py-3 border-b border-slate-200 bg-slate-50">
+              <input
+                type="text"
+                value={dilutionSearch}
+                onChange={(e) => setDilutionSearch(e.target.value)}
+                placeholder="Buscar por medicamento..."
+                className="w-full sm:w-80 border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              />
+            </div>
+
+            <div className="flex-1 overflow-auto">
+              <table className="min-w-[1200px] w-full text-left border-collapse">
+                <thead className="bg-slate-800 text-white sticky top-0 z-10">
+                  <tr>
+                    {dilutionColumns.map((column) => (
+                      <th key={column} className="p-2 text-xs font-semibold uppercase tracking-wide border-b border-slate-700">{column}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredDilutionRows.length === 0 && (
+                    <tr>
+                      <td colSpan={Math.max(1, dilutionColumns.length)} className="p-6 text-center text-slate-500 text-sm">
+                        {dilutionRows.length === 0 ? 'No hay diluciones registradas.' : 'No se encontraron resultados para ese medicamento.'}
+                      </td>
+                    </tr>
+                  )}
+                  {filteredDilutionRows.map((row, index) => (
+                    <tr key={`dilution-row-${index}`} className="border-b border-slate-100 hover:bg-slate-50">
+                      {dilutionColumns.map((column) => (
+                        <td key={`${column}-${index}`} className="p-2 align-top text-xs text-slate-700 whitespace-pre-wrap">{String(row?.[column] ?? '').trim() || '-'}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="px-4 py-3 border-t border-slate-200 bg-slate-50 flex justify-end">
+              <button onClick={() => setShowDilutionsModal(false)} className="px-4 py-2 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 font-medium">
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 flex flex-wrap items-center gap-3">
+        <span className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-2 py-1 text-violet-800">
+          <span className="inline-block w-3 h-3 rounded-full bg-violet-500" aria-hidden="true"></span>
+          PRN (Por Razón Necesaria)
+        </span>
+        <span className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-amber-800">
+          <span className="inline-block w-3 h-3 rounded-full bg-amber-500" aria-hidden="true"></span>
+          Quirófano
+        </span>
+        <span className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-slate-100 px-2 py-1 text-slate-700">
+          <span className="inline-block w-3 h-3 rounded-full bg-slate-500" aria-hidden="true"></span>
+          Medicamento suspendido
+        </span>
       </div>
 
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 flex justify-start sm:justify-end shadow-sm print:bg-transparent print:border-none print:shadow-none mb-4">
@@ -1153,8 +1453,12 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
           items={pendientes}
           updateItem={updateItem}
           updateItemStatus={updateItemStatus}
+          onDuplicateItem={duplicateMedication}
           onDeleteItem={requestDeletePharma}
           onViewItem={openPharmaDetail}
+          onViewDilution={openMedicationDilutionModal}
+          reviewedMap={reviewedMedications}
+          onToggleReviewed={toggleMedicationReviewed}
           hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
           dischargeDate={patient.demographics.egreso}
           theme="blue"
@@ -1165,8 +1469,12 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
         items={atbs}
         updateItem={updateItem}
         updateItemStatus={updateItemStatus}
+        onDuplicateItem={duplicateMedication}
         onDeleteItem={requestDeletePharma}
         onViewItem={openPharmaDetail}
+        onViewDilution={openMedicationDilutionModal}
+        reviewedMap={reviewedMedications}
+        onToggleReviewed={toggleMedicationReviewed}
         hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
         dischargeDate={patient.demographics.egreso}
         theme="orange"
@@ -1176,8 +1484,12 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
         items={altos}
         updateItem={updateItem}
         updateItemStatus={updateItemStatus}
+        onDuplicateItem={duplicateMedication}
         onDeleteItem={requestDeletePharma}
         onViewItem={openPharmaDetail}
+        onViewDilution={openMedicationDilutionModal}
+        reviewedMap={reviewedMedications}
+        onToggleReviewed={toggleMedicationReviewed}
         hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
         dischargeDate={patient.demographics.egreso}
         theme="red"
@@ -1187,8 +1499,12 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
         items={gens}
         updateItem={updateItem}
         updateItemStatus={updateItemStatus}
+        onDuplicateItem={duplicateMedication}
         onDeleteItem={requestDeletePharma}
         onViewItem={openPharmaDetail}
+        onViewDilution={openMedicationDilutionModal}
+        reviewedMap={reviewedMedications}
+        onToggleReviewed={toggleMedicationReviewed}
         hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
         dischargeDate={patient.demographics.egreso}
         theme="blue"
@@ -1281,13 +1597,93 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient }) {
           onNextPharmaItem={handleNextPharmaModal}
         />
       )}
+
+      {medDilutionModal.open && (
+        <div className="fixed inset-0 z-[96] bg-slate-900/60 backdrop-blur-[1px] flex items-center justify-center p-4 print:hidden" onClick={() => setMedDilutionModal({ open: false, medicationName: '', rows: [] })}>
+          <div className="w-full max-w-6xl rounded-xl border border-slate-200 bg-white shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="px-4 py-3 border-b border-slate-200 bg-cyan-700 text-white flex items-center justify-between gap-3">
+              <h3 className="font-bold text-base sm:text-lg">Dilución de: {medDilutionModal.medicationName || 'medicamento'}</h3>
+              <button onClick={() => setMedDilutionModal({ open: false, medicationName: '', rows: [] })} className="text-cyan-100 hover:text-white" aria-label="Cerrar modal de dilución por medicamento">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3">
+              {medDilutionModal.rows.length === 0 ? (
+                <div className="text-sm text-slate-700">
+                  Este medicamento no tiene registro en la tabla de diluciones.
+                </div>
+              ) : (
+                medDilutionModal.rows.map((row, index) => (
+                  <div key={`med-dil-row-${index}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    {medDilutionModal.rows.length > 1 && (
+                      <div className="text-[11px] font-bold uppercase tracking-wide text-cyan-700 mb-2">Registro {index + 1}</div>
+                    )}
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                      {dilutionColumns.map((column) => (
+                        <div key={`med-dil-cell-${column}-${index}`} className="rounded border border-slate-200 bg-white p-2">
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{column}</p>
+                          <p className="text-xs text-slate-700 whitespace-pre-wrap break-words">{String(row?.[column] ?? '').trim() || '-'}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="px-4 py-3 border-t border-slate-200 bg-slate-50 flex justify-end">
+              <button onClick={() => setMedDilutionModal({ open: false, medicationName: '', rows: [] })} className="px-4 py-2 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 font-medium">
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function PharmaSection({ title, items, updateItem, updateItemStatus, onDeleteItem, onViewItem, hasModalOnlyChanges, dischargeDate, theme }) {
+function PharmaSection({ title, items, updateItem, updateItemStatus, onDuplicateItem = () => {}, onDeleteItem, onViewItem, onViewDilution = () => {}, hasModalOnlyChanges, dischargeDate, theme, reviewedMap = {}, onToggleReviewed = () => {} }) {
   const headerColors = { orange: 'bg-orange-100 text-orange-900 border-orange-200', red: 'bg-red-100 text-red-900 border-red-200', blue: 'bg-slate-100 text-slate-800 border-slate-200' };
   const isMarSection = title === 'Medicamentos de Alto Riesgo';
+  const isInitialClassificationSection = title === 'Clasificación inicial de fármacos';
+  const categoryOrder = ['General', 'Antibiótico', 'Alto Riesgo'];
+  const [categoryPicker, setCategoryPicker] = useState({ open: false, item: null });
+
+  const getCategoryMeta = (category = '') => {
+    if (!String(category || '').trim()) {
+      return { icon: ListChecks, label: 'Sin clasificar', className: 'border-amber-200 bg-amber-50 text-amber-700' };
+    }
+    if (category === 'Antibiótico') {
+      return { icon: Microscope, label: 'Antibiótico', className: 'border-orange-200 bg-orange-50 text-orange-700' };
+    }
+    if (category === 'Alto Riesgo') {
+      return { icon: ShieldAlert, label: 'Alto Riesgo', className: 'border-red-200 bg-red-50 text-red-700' };
+    }
+    return { icon: Activity, label: 'General', className: 'border-slate-300 bg-slate-100 text-slate-700' };
+  };
+
+  const openCategoryPicker = (item) => {
+    setCategoryPicker({ open: true, item });
+  };
+
+  const closeCategoryPicker = () => {
+    setCategoryPicker({ open: false, item: null });
+  };
+
+  const setCategoryFromPicker = (nextCategory) => {
+    if (!categoryPicker.item?.id) {
+      closeCategoryPicker();
+      return;
+    }
+    if (!categoryOrder.includes(nextCategory)) {
+      closeCategoryPicker();
+      return;
+    }
+    updateItem(categoryPicker.item.id, 'categoria', nextCategory);
+    closeCategoryPicker();
+  };
 
   const sortedItems = [...items].sort((a, b) => {
     if (a.estado === 'Suspendido' && b.estado !== 'Suspendido') return 1;
@@ -1298,7 +1694,10 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, onDeleteIte
   return (
     <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-visible mb-6 print:border-slate-300 print:shadow-none">
       <div className={`px-4 py-2 font-bold border-b ${headerColors[theme]} print:bg-slate-100 print:text-black print:border-slate-300 flex items-center justify-between gap-3`}>
-        <span>{title}</span>
+        <span className="inline-flex items-center gap-2">
+          {isInitialClassificationSection && <Layers className="w-4 h-4" />}
+          {title}
+        </span>
         {isMarSection && (
           <div className="relative group print:hidden">
             <button
@@ -1326,30 +1725,57 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, onDeleteIte
         <table className="w-full table-fixed text-[10px] sm:text-xs lg:text-sm border-collapse">
           <thead className="bg-slate-50 border-b print:bg-white">
             <tr>
-              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[11%]">Categoría</th>
+              <th className="p-1 text-center font-semibold uppercase tracking-wide text-[9px] text-slate-600 w-[4%] print:hidden">Rev.</th>
+              <th className="p-1 md:p-1.5 text-center font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[5%]">CAT</th>
               <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[22%]">Principio Activo</th>
               <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[12%]">Marca Com.</th>
               <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[12%]">Dosis</th>
               <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[10%]">Frec.</th>
-              <th className="p-1 md:p-1.5 text-center font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[8%]">Días act.</th>
-              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[11%]">F. Inicio</th>
-              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[8%]">Estado</th>
-              <th className="p-1 md:p-1.5 text-center font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[6%] print:hidden">Acciones</th>
+              <th className="p-1 md:p-1.5 text-center font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[7%]">Días act.</th>
+              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[10%]">F. Inicio</th>
+              <th className="p-1 md:p-1.5 text-center font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[5%]">Estado</th>
+              <th className="p-1 md:p-1.5 text-center font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[11%] print:hidden">Acciones</th>
             </tr>
           </thead>
           <tbody>
-            {sortedItems.length === 0 && <tr><td colSpan="9" className="p-3 text-center text-slate-400 italic">No hay registros.</td></tr>}
+            {sortedItems.length === 0 && <tr><td colSpan="10" className="p-3 text-center text-slate-400 italic">No hay registros.</td></tr>}
             {sortedItems.map((item) => {
               const isSuspended = item.estado === 'Suspendido';
               const isPrn = item.prn === true;
+              const isQuirofano = item.quirofano === true;
+              const isReviewed = reviewedMap[item.id] === true;
               const modalOnlyChanged = hasModalOnlyChanges?.(item) === true;
               const endDate = isSuspended ? item.fechaSuspension : dischargeDate;
               const daysActive = item.fechaInicio ? (calculateDaysOfUse(item.fechaInicio, endDate) || '-') : '-';
               const frequency = parseFrequency(item.frecuencia);
+              const categoryMeta = getCategoryMeta(item.categoria);
+              const CategoryIcon = categoryMeta.icon;
 
               return (
-                <tr key={item.id} className={`border-b border-slate-200 transition-colors ${isPrn ? 'bg-violet-100/75 hover:bg-violet-100/90 [&_input]:bg-violet-50 [&_select]:bg-violet-50 [&_input]:border-violet-200 [&_select]:border-violet-200' : isSuspended ? 'bg-slate-100/90 opacity-80 print:opacity-100 print:bg-slate-50' : 'hover:bg-slate-50/70'} ${isPrn && isSuspended ? 'opacity-80 print:opacity-100' : ''}`}>
-                  <td className="p-1 md:p-1.5"><select className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm p-1 md:p-1.5 print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.categoria} onChange={(e) => updateItem(item.id, 'categoria', e.target.value)}><option value="">Seleccionar</option>{CATEGORIAS_FARMACO.map((c) => <option key={c} value={c}>{c}</option>)}</select></td>
+                <tr key={item.id} className={`border-b border-slate-200 transition-colors ${isQuirofano ? 'bg-amber-100/80 hover:bg-amber-100/95 [&_input]:bg-amber-50 [&_select]:bg-amber-50 [&_input]:border-amber-200 [&_select]:border-amber-200' : isPrn ? 'bg-violet-100/75 hover:bg-violet-100/90 [&_input]:bg-violet-50 [&_select]:bg-violet-50 [&_input]:border-violet-200 [&_select]:border-violet-200' : isSuspended ? 'bg-slate-100/90 opacity-80 print:opacity-100 print:bg-slate-50' : 'hover:bg-slate-50/70'} ${(isPrn || isQuirofano) && isSuspended ? 'opacity-80 print:opacity-100' : ''}`}>
+                  <td className="p-1 text-center print:hidden">
+                    <button
+                      type="button"
+                      onClick={() => onToggleReviewed(item.id)}
+                      className={`inline-flex h-5 w-5 items-center justify-center rounded border transition ${isReviewed ? 'border-emerald-300 bg-emerald-50 text-emerald-600' : 'border-slate-300 bg-slate-50 text-slate-400 hover:text-slate-500'}`}
+                      title={isReviewed ? 'Revisado' : 'Marcar como revisado'}
+                      aria-label={isReviewed ? 'Revisado' : 'Marcar como revisado'}
+                      aria-pressed={isReviewed}
+                    >
+                      <CheckCircle className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
+                  <td className="p-1 md:p-1.5 text-center">
+                    <button
+                      type="button"
+                      onClick={() => openCategoryPicker(item)}
+                      className={`inline-flex h-7 w-7 lg:h-8 lg:w-8 items-center justify-center rounded-md border transition ${categoryMeta.className}`}
+                      title={`Categoría: ${categoryMeta.label} (clic para elegir destino)`}
+                      aria-label={`Categoría: ${categoryMeta.label} (clic para elegir destino)`}
+                    >
+                      <CategoryIcon className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
                   <td className="p-1 md:p-1.5"><input type="text" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm font-medium print:border-none print:bg-transparent ${isSuspended ? 'line-through text-slate-500 bg-slate-200' : ''}`} value={item.principio} onChange={(e) => updateItem(item.id, 'principio', e.target.value)} /></td>
                   <td className="p-1 md:p-1.5"><input type="text" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} placeholder="Opcional" value={item.marcaComercial || ''} onChange={(e) => updateItem(item.id, 'marcaComercial', e.target.value)} /></td>
                   <td className="p-1 md:p-1.5"><input type="text" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.dosis} onChange={(e) => updateItem(item.id, 'dosis', e.target.value)} /></td>
@@ -1376,16 +1802,24 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, onDeleteIte
                   </td>
                   <td className="p-1 md:p-1.5 text-center font-semibold text-slate-700">{daysActive}</td>
                   <td className="p-1 md:p-1.5"><input type="date" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm p-1 md:p-1.5 print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.fechaInicio} onChange={(e) => updateItem(item.id, 'fechaInicio', e.target.value)} /></td>
-                  <td className="p-1 md:p-1.5">
-                    <select className={`min-w-0 w-full h-8 lg:h-9 rounded-md text-xs lg:text-sm p-1 md:p-1.5 font-semibold border print:appearance-none print:border-none print:bg-transparent ${isPrn ? 'bg-violet-100 text-violet-800 border-violet-300' : isSuspended ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-50 text-green-800 border-green-300'}`} value={item.estado} onChange={(e) => updateItemStatus(item.id, e.target.value)}>
-                      <option value="Activo">Activo</option>
-                      <option value="Suspendido">Suspendido</option>
-                    </select>
+                  <td className="p-1 md:p-1.5 text-center">
+                    <button
+                      type="button"
+                      onClick={() => updateItemStatus(item.id, isSuspended ? 'Activo' : 'Suspendido')}
+                      className={`inline-flex h-7 w-7 lg:h-8 lg:w-8 items-center justify-center rounded-md border shadow-sm transition ${isSuspended ? 'border-red-300 bg-red-50 text-red-700 hover:bg-red-100' : 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'}`}
+                      title={isSuspended ? 'Suspendido (clic para activar)' : 'Activo (clic para suspender)'}
+                      aria-label={isSuspended ? 'Suspendido (clic para activar)' : 'Activo (clic para suspender)'}
+                      aria-pressed={isSuspended}
+                    >
+                      <Pill className="w-3.5 h-3.5" />
+                    </button>
                   </td>
                   <td className="p-1 md:p-1.5 text-center print:hidden">
                     <div className="flex items-center justify-center gap-1.5 lg:gap-2">
-                      <button onClick={() => onViewItem(item.id)} className={`inline-flex h-7 w-7 lg:h-8 lg:w-8 items-center justify-center rounded-md border shadow-sm transition ${modalOnlyChanged ? 'border-violet-300 bg-violet-100 text-violet-700 hover:bg-violet-200 hover:border-violet-400' : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 hover:border-blue-300'}`} title={modalOnlyChanged ? 'Hay cambios pendientes en campos del detalle' : 'Ver detalle'}><Eye className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => onDeleteItem(item)} className="inline-flex h-7 w-7 lg:h-8 lg:w-8 items-center justify-center rounded-md border border-red-200 bg-red-50 text-red-700 shadow-sm hover:bg-red-100 hover:border-red-300 transition" title="Eliminar"><Trash2 className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => onDuplicateItem(item)} className="inline-flex h-8 w-8 lg:h-9 lg:w-9 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-700 shadow-sm hover:bg-slate-100 hover:border-slate-400 transition" title="Duplicar medicamento"><Copy className="w-4 h-4" /></button>
+                      <button onClick={() => onViewDilution(item.principio)} className="inline-flex h-8 w-8 lg:h-9 lg:w-9 items-center justify-center rounded-md border border-cyan-200 bg-cyan-50 text-cyan-700 shadow-sm hover:bg-cyan-100 hover:border-cyan-300 transition" title="Ver dilución del medicamento"><Microscope className="w-4 h-4" /></button>
+                      <button onClick={() => onViewItem(item.id)} className={`inline-flex h-8 w-8 lg:h-9 lg:w-9 items-center justify-center rounded-md border shadow-sm transition ${modalOnlyChanged ? 'border-violet-300 bg-violet-100 text-violet-700 hover:bg-violet-200 hover:border-violet-400' : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 hover:border-blue-300'}`} title={modalOnlyChanged ? 'Hay cambios pendientes en campos del detalle' : 'Ver detalle'}><Eye className="w-4 h-4" /></button>
+                      <button onClick={() => onDeleteItem(item)} className="inline-flex h-8 w-8 lg:h-9 lg:w-9 items-center justify-center rounded-md border border-red-200 bg-red-50 text-red-700 shadow-sm hover:bg-red-100 hover:border-red-300 transition" title="Eliminar"><Trash2 className="w-4 h-4" /></button>
                     </div>
                   </td>
                 </tr>
@@ -1394,6 +1828,46 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, onDeleteIte
           </tbody>
         </table>
       </div>
+
+      {categoryPicker.open && (
+        <div className="fixed inset-0 z-[97] bg-slate-900/55 backdrop-blur-[1px] flex items-center justify-center p-4 print:hidden" onClick={closeCategoryPicker}>
+          <div className="w-full max-w-sm rounded-xl border border-slate-200 bg-white shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="px-4 py-3 border-b border-slate-200 bg-slate-100 text-slate-800 flex items-center justify-between">
+              <h3 className="font-bold text-sm">Cambiar categoría</h3>
+              <button onClick={closeCategoryPicker} className="text-slate-500 hover:text-slate-700" aria-label="Cerrar selector de categoría">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-4 py-3 border-b border-slate-200 text-sm text-slate-700">
+              ¿A qué categoría quieres mandar <span className="font-semibold">{categoryPicker.item?.principio || 'este medicamento'}</span>?
+            </div>
+            <div className="p-3 space-y-2">
+              {categoryOrder.map((category) => {
+                const meta = getCategoryMeta(category);
+                const Icon = meta.icon;
+                const isCurrent = (categoryPicker.item?.categoria || 'General') === category;
+                return (
+                  <button
+                    key={category}
+                    type="button"
+                    onClick={() => setCategoryFromPicker(category)}
+                    className={`w-full flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition ${isCurrent ? 'border-blue-300 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+                  >
+                    <span className={`inline-flex h-6 w-6 items-center justify-center rounded-md border ${meta.className}`}>
+                      <Icon className="w-3.5 h-3.5" />
+                    </span>
+                    <span>{meta.label}</span>
+                    {isCurrent && <span className="ml-auto text-[11px] font-bold uppercase">Actual</span>}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="px-3 py-3 border-t border-slate-200 bg-slate-50 flex justify-end">
+              <button onClick={closeCategoryPicker} className="px-3 py-1.5 rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 text-sm font-medium">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1435,6 +1909,53 @@ function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPha
     return `${String(hours12).padStart(2, '0')}:${String(minutes).padStart(2, '0')} ${period}`;
   };
 
+  const buildMedicationScheduleEntries = (medication, maxDoses = 24) => {
+    const medFrequency = parseFrequency(medication?.frecuencia || '');
+    const medFrequencyNumeric = Number(medFrequency.value || 0);
+    const medIntervalMinutes = medFrequencyNumeric > 0
+      ? (medFrequency.unit === 'min' ? medFrequencyNumeric : medFrequencyNumeric * 60)
+      : 0;
+
+    if (medIntervalMinutes <= 0) return [];
+
+    const medUseManualDoseCount = medication?.seguimientoUsarCantidadDosis === true;
+    const medCustomDoseCount = Number(sanitizeFrequencyNumber(medication?.seguimientoDosisCantidad || ''));
+    const medDoseCountBase = medUseManualDoseCount && medCustomDoseCount > 0
+      ? medCustomDoseCount
+      : Math.max(1, Math.floor((24 * 60) / medIntervalMinutes));
+    const medDisplayedDoses = Math.max(0, Math.min(medDoseCountBase, maxDoses));
+
+    const medFirstDose = String(medication?.horaPrimeraDosis || '');
+    const medFirstDoseDate = String(medication?.seguimientoBaseDate || '').slice(0, 10);
+
+    if (!medFirstDoseDate || !/^\d{2}:\d{2}$/.test(medFirstDose)) return [];
+
+    const [baseYear, baseMonth, baseDay] = medFirstDoseDate.split('-').map((n) => Number(n));
+    const [firstHours, firstMinutesOnly] = medFirstDose.split(':').map((n) => Number(n));
+
+    if (!Number.isFinite(baseYear) || !Number.isFinite(baseMonth) || !Number.isFinite(baseDay)) return [];
+    if (!Number.isFinite(firstHours) || !Number.isFinite(firstMinutesOnly)) return [];
+
+    const firstDoseDateTime = new Date(baseYear, baseMonth - 1, baseDay, firstHours, firstMinutesOnly, 0, 0);
+    if (!Number.isFinite(firstDoseDateTime.getTime())) return [];
+
+    return Array.from({ length: medDisplayedDoses }, (_, index) => {
+      const doseDateTime = new Date(firstDoseDateTime.getTime() + (index * medIntervalMinutes * 60 * 1000));
+      const yyyy = doseDateTime.getFullYear();
+      const mm = String(doseDateTime.getMonth() + 1).padStart(2, '0');
+      const dd = String(doseDateTime.getDate()).padStart(2, '0');
+      const hh = String(doseDateTime.getHours()).padStart(2, '0');
+      const min = String(doseDateTime.getMinutes()).padStart(2, '0');
+
+      return {
+        index,
+        minuteTs: Math.floor(doseDateTime.getTime() / 60000),
+        dateTimeLabel: `${dd}/${mm}/${yyyy} ${hh}:${min}`,
+        timeLabel: formatMinutesToAmPm((doseDateTime.getHours() * 60) + doseDateTime.getMinutes()),
+      };
+    });
+  };
+
   const scheduleTimes = Array.from({ length: displayedDoses }, (_, index) => {
     if (!firstDoseDateValue || firstDoseMinutes === null || intervalMinutes <= 0) {
       return { timeLabel: '', dateTimeLabel: '' };
@@ -1461,6 +1982,43 @@ function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPha
       dateTimeLabel: `${dd}/${mm}/${yyyy} ${String(doseDateTime.getHours()).padStart(2, '0')}:${String(doseDateTime.getMinutes()).padStart(2, '0')}`,
     };
   });
+
+  const collisionAlerts = useMemo(() => {
+    if (isSolution) return [];
+
+    const currentSchedule = buildMedicationScheduleEntries(item, 24);
+    if (currentSchedule.length === 0) return [];
+
+    const otherMeds = (patient?.perfilFarmaco || []).filter((med) => med?.id !== item?.id);
+    if (otherMeds.length === 0) return [];
+
+    const occupiedTimes = new Map();
+
+    otherMeds.forEach((med) => {
+      const medName = String(med?.principio || '').trim() || 'Medicamento sin nombre';
+      const medSchedule = buildMedicationScheduleEntries(med, 24);
+
+      medSchedule.forEach((entry) => {
+        if (!occupiedTimes.has(entry.minuteTs)) {
+          occupiedTimes.set(entry.minuteTs, new Set());
+        }
+        occupiedTimes.get(entry.minuteTs).add(medName);
+      });
+    });
+
+    return currentSchedule
+      .map((entry) => {
+        const collidingNames = occupiedTimes.get(entry.minuteTs);
+        if (!collidingNames || collidingNames.size === 0) return null;
+        return {
+          doseLabel: `Dosis #${entry.index + 1}`,
+          whenLabel: entry.dateTimeLabel,
+          meds: Array.from(collidingNames),
+        };
+      })
+      .filter(Boolean);
+  }, [isSolution, item, patient?.perfilFarmaco]);
+
   const currentPharmaIndex = !isSolution ? pharmaItemIds.indexOf(item.id) : -1;
   const canNavigatePharma = !isSolution && pharmaItemIds.length > 1 && currentPharmaIndex >= 0;
   const [isVisible, setIsVisible] = useState(false);
@@ -1700,6 +2258,17 @@ function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPha
                         <p className="text-xs text-slate-600">Activa la cantidad manual e ingresa el número de dosis para generar los campos.</p>
                       )}
 
+                      {collisionAlerts.length > 0 && (
+                        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 space-y-1">
+                          <p className="font-semibold">Choque de horarios detectado con otros medicamentos:</p>
+                          {collisionAlerts.map((alert) => (
+                            <p key={`${alert.doseLabel}-${alert.whenLabel}`}>
+                              {alert.doseLabel} ({alert.whenLabel}) choca con: <span className="font-semibold">{alert.meds.join(', ')}</span>
+                            </p>
+                          ))}
+                        </div>
+                      )}
+
                       <div className="overflow-x-auto">
                         <div className="flex gap-2 min-w-max pb-1">
                           {Array.from({ length: displayedDoses }, (_, index) => (
@@ -1766,6 +2335,18 @@ function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPha
                     <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Volumen (mL)" type="number" value={item.volumen || ''} onChange={(e) => updateField('volumen', e.target.value)} /></div>
                     <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Tiempo (hr)" type="number" value={item.tiempo || ''} onChange={(e) => updateField('tiempo', e.target.value)} /></div>
                     <div className="rounded-lg border border-white/80 bg-white/85 p-2 shadow-sm"><FormInput label="Velocidad (mL/hr)" type="number" value={item.velocidad || ''} onChange={(e) => updateField('velocidad', e.target.value)} /></div>
+                    <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-2 shadow-sm">
+                      <label className="flex items-center gap-2 text-sm font-semibold text-amber-800 mb-1">
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 rounded border-amber-300 text-amber-600"
+                          checked={item.quirofano === true}
+                          onChange={(e) => updateField('quirofano', e.target.checked)}
+                        />
+                        Quirófano
+                      </label>
+                      <p className="text-[11px] text-amber-700">Resalta este medicamento en la tabla.</p>
+                    </div>
                     <div className="rounded-lg border border-white/80 bg-white/90 p-2 shadow-sm md:col-span-2 xl:col-span-2">
                       <label className="flex items-center gap-2 text-sm font-semibold text-slate-700 mb-2">
                         <input

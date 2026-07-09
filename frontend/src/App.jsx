@@ -189,7 +189,7 @@ const DEFAULT_DILUTIONS_COLUMNS = [
 ];
 const UNSAVED_CHANGES_BEFOREUNLOAD_MSG = 'Hay cambios pendientes. Si recargas la pagina, se perderan los datos no guardados.';
 const SYNC_RETRY_MS = 3000;
-const APP_VERSION = 'FARMA 1.4';
+const APP_VERSION = 'FARMA 2.1';
 const ADULTO_MAYOR_EDAD = 65;
 const NOTIF_SIN_CAMBIOS_HORAS = 4;
 const NOTIF_ANTIBIOTICO_DIAS = 5;
@@ -553,6 +553,27 @@ const generateInternalIdentifier = (patients, ingresoDate) => {
   return `${prefix}${nextNum}`;
 };
 
+const normalizeRoomValue = (value = '') => String(value)
+  .toLowerCase()
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const isActiveHospitalizedPatient = (patient) => {
+  if (!patient || patient.deleted) return false;
+  return !patient.demographics?.egreso;
+};
+
+const findActiveRoomConflict = (patients = [], roomValue = '', excludedPatientId = '') => {
+  const normalizedRoom = normalizeRoomValue(roomValue);
+  if (!normalizedRoom) return null;
+
+  return (patients || []).find((p) => (
+    p?.id !== excludedPatientId
+    && isActiveHospitalizedPatient(p)
+    && normalizeRoomValue(p?.demographics?.habitacion) === normalizedRoom
+  )) || null;
+};
+
 const exportToCSV = (filename, rows) => {
   const csvContent = "data:text/csv;charset=utf-8,\uFEFF" 
     + rows.map(e => e.map(cell => `"${(cell || '').toString().replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -648,7 +669,6 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('demographics');
   const [viewingAdmin, setViewingAdmin] = useState(false);
   const [showNewPatientModal, setShowNewPatientModal] = useState(false);
-  const [newPatientMode, setNewPatientMode] = useState('normal');
   const [isPatientSidebarOpen, setIsPatientSidebarOpen] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
   const [syncError, setSyncError] = useState('');
@@ -1341,6 +1361,18 @@ export default function App() {
 
         if (!draftToSave?.id) return false;
 
+        const roomConflict = isActiveHospitalizedPatient(draftToSave)
+          ? findActiveRoomConflict(patients, draftToSave.demographics?.habitacion, draftToSave.id)
+          : null;
+        if (roomConflict) {
+          openLockModal(
+            'Habitación ocupada',
+            `No se puede guardar: la habitación ${draftToSave.demographics?.habitacion || '-'} ya está asignada al paciente activo ${roomConflict.demographics?.nombre || 'sin nombre'}.`,
+            'error',
+          );
+          return false;
+        }
+
         const lockResult = await acquirePatientLock(draftToSave.id);
         if (!lockResult?.ok) {
           const blockingName = lockResult?.lockedByUserName || 'otro usuario';
@@ -1822,6 +1854,18 @@ export default function App() {
     if (!activePatientForEditing?.id) return;
     if (!draftDirty) return;
 
+    const roomConflict = isActiveHospitalizedPatient(activePatientForEditing)
+      ? findActiveRoomConflict(patients, activePatientForEditing.demographics?.habitacion, activePatientForEditing.id)
+      : null;
+    if (roomConflict) {
+      openLockModal(
+        'Habitación ocupada',
+        `No se puede guardar: la habitación ${activePatientForEditing.demographics?.habitacion || '-'} ya está asignada al paciente activo ${roomConflict.demographics?.nombre || 'sin nombre'}.`,
+        'error',
+      );
+      return;
+    }
+
     const lockResult = await acquirePatientLock(activePatientForEditing.id);
     if (!lockResult?.ok) {
       const blockingName = lockResult?.lockedByUserName || 'otro usuario';
@@ -1844,8 +1888,17 @@ export default function App() {
     setIsSavingDraft(false);
   };
 
-  const createNewPatientFromModal = (initialData, options = {}) => {
-    const mode = options?.mode === 'preregistro' ? 'preregistro' : 'normal';
+  const createNewPatientFromModal = (initialData) => {
+    const roomConflict = findActiveRoomConflict(patients, initialData?.habitacion);
+    if (roomConflict) {
+      openLockModal(
+        'Habitación ocupada',
+        `No se puede crear el paciente: la habitación ${initialData?.habitacion || '-'} ya está asignada al paciente activo ${roomConflict.demographics?.nombre || 'sin nombre'}.`,
+        'error',
+      );
+      return;
+    }
+
     const newId = Date.now().toString();
     const now = Date.now();
     const currentDateLocal = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0,16);
@@ -1856,7 +1909,6 @@ export default function App() {
       id: newId,
       pacienteBaseId: newId, 
       deleted: false,
-      preRegistro: mode === 'preregistro',
       lastChangedAt: now,
       lastReviewedAt: now,
       activeUsers: [currentUser.id], // Ingresamos directamente como activos
@@ -1870,11 +1922,19 @@ export default function App() {
     setActivePatientId(newId);
     setActiveTab('demographics');
     setShowNewPatientModal(false);
-    setNewPatientMode('normal');
   };
 
-  const handleCreateReingresoFromModal = (basePatientMatch, initialData = {}, options = {}) => {
-    const mode = options?.mode === 'preregistro' ? 'preregistro' : 'normal';
+  const handleCreateReingresoFromModal = (basePatientMatch, initialData = {}) => {
+    const roomConflict = findActiveRoomConflict(patients, initialData?.habitacion);
+    if (roomConflict) {
+      openLockModal(
+        'Habitación ocupada',
+        `No se puede crear el reingreso: la habitación ${initialData?.habitacion || '-'} ya está asignada al paciente activo ${roomConflict.demographics?.nombre || 'sin nombre'}.`,
+        'error',
+      );
+      return;
+    }
+
     const baseId = basePatientMatch.pacienteBaseId || basePatientMatch.id;
     const newId = Date.now().toString();
     const now = Date.now();
@@ -1886,7 +1946,6 @@ export default function App() {
         id: newId,
         pacienteBaseId: baseId,
         deleted: false,
-      preRegistro: mode === 'preregistro',
       lastChangedAt: now,
       lastReviewedAt: now,
         activeUsers: [currentUser.id],
@@ -1915,15 +1974,6 @@ export default function App() {
     setActivePatientId(newReingreso.id);
     setActiveTab('demographics');
     setShowNewPatientModal(false);
-    setNewPatientMode('normal');
-  };
-
-  const registerPreRegisteredPatient = (id) => {
-    setPatients((prev) => prev.map((p) => {
-      if (p.id !== id) return p;
-      if (p.preRegistro !== true) return p;
-      return { ...p, preRegistro: false, lastChangedAt: Date.now() };
-    }));
   };
 
   const handleCreateReingreso = async () => {
@@ -1986,14 +2036,8 @@ export default function App() {
           onCreateReminder={createReminderForPatient}
            onSelect={handleEnterPatient} 
            onCreate={() => {
-             setNewPatientMode('normal');
              setShowNewPatientModal(true);
            }} 
-           onCreatePreRegister={() => {
-             setNewPatientMode('preregistro');
-             setShowNewPatientModal(true);
-           }}
-           onRegisterPreRegistered={registerPreRegisteredPatient}
            onDelete={moveToTrash} 
            onRestore={restorePatient} 
            onHardDelete={permanentlyDelete} 
@@ -2016,13 +2060,11 @@ export default function App() {
         {showNewPatientModal && (
            <NewPatientModal 
               patients={patients} 
-              mode={newPatientMode}
               onClose={() => {
                setShowNewPatientModal(false);
-               setNewPatientMode('normal');
               }} 
-              onCreateNew={(initialData) => createNewPatientFromModal(initialData, { mode: newPatientMode })} 
-              onCreateReingreso={(basePatient, initialData) => handleCreateReingresoFromModal(basePatient, initialData, { mode: newPatientMode })} 
+              onCreateNew={createNewPatientFromModal}
+              onCreateReingreso={handleCreateReingresoFromModal}
               formatExcelDate={formatExcelDate}
            />
         )}
@@ -2051,10 +2093,14 @@ export default function App() {
 
   const handleExportPatientCSV = () => {
     const p = activePatientForEditing;
+    const edadInfo = calculateAge(p.demographics.fechaNacimiento);
+    const grupoEtario = Number(edadInfo.years) < 18
+      ? 'Niño'
+      : (Number(edadInfo.years) >= ADULTO_MAYOR_EDAD ? 'Adulto mayor' : 'Adulto');
     const rows = [
       ["REPORTE INDIVIDUAL DE PACIENTE", p.demographics.nombre],
       ["ID Interno (FV)", p.demographics.identificadorInterno, "No. Paciente", p.demographics.numeroPaciente, "No. Episodio", p.demographics.numeroEpisodio],
-      ["Habitación", p.demographics.habitacion, "Edad", edad, "Género", p.demographics.genero],
+      ["Habitación", p.demographics.habitacion, "Edad", edad, "Grupo Etario", grupoEtario, "Género", p.demographics.genero],
       ["Diagnóstico", p.demographics.diagnosticoPrincipal, "Ingreso", formatExcelDate(p.demographics.ingreso), "Egreso", formatExcelDate(p.demographics.egreso)],
       ["Tipo de Paciente", p.demographics.tipoPaciente, "Especialidad", p.demographics.especialidad],
       ["Observaciones", p.demographics.observacionesGenerales],
@@ -2198,7 +2244,7 @@ export default function App() {
 
             {activeTab === 'demographics' && <DemographicsTab patient={activePatientForEditing} updatePatient={updatePatient} allPatients={patients} />}
             {activeTab === 'conciliation' && <ConciliationTab patient={activePatientForEditing} updatePatient={updatePatient} />}
-            {activeTab === 'pharmacotherapy' && <PharmacotherapyTab patient={activePatientForEditing} sourcePatient={activePatient} updatePatient={updatePatient} />}
+            {activeTab === 'pharmacotherapy' && <PharmacotherapyTab patient={activePatientForEditing} sourcePatient={activePatient} updatePatient={updatePatient} dilutionsTable={dilutionsTable} />}
             {activeTab === 'prm' && <PrmTab patient={activePatientForEditing} updatePatient={updatePatient} />}
             {activeTab === 'labs' && <LabsTab patient={activePatientForEditing} updatePatient={updatePatient} />}
             {activeTab === 'micro' && <MicrobiologyTab patient={activePatientForEditing} updatePatient={updatePatient} />}

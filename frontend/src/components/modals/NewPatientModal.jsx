@@ -9,11 +9,15 @@ const normalizePatientName = (value = '') => String(value)
   .replace(/\s+/g, ' ')
   .trim();
 
-export default function NewPatientModal({ patients, mode = 'normal', onClose, onCreateNew, onCreateReingreso, formatExcelDate }) {
-  const isPreRegisterMode = mode === 'preregistro';
-  const modalTitle = isPreRegisterMode ? 'Iniciar pre-registro' : 'Iniciar nuevo expediente';
-  const createNewLabel = isPreRegisterMode ? 'Crear pre-registro' : 'Crear nuevo perfil';
-  const createReingresoLabel = isPreRegisterMode ? 'Agregar como pre-reingreso' : 'Agregar como reingreso';
+const normalizeRoomValue = (value = '') => String(value)
+  .toLowerCase()
+  .replace(/\s+/g, ' ')
+  .trim();
+
+export default function NewPatientModal({ patients, onClose, onCreateNew, onCreateReingreso, formatExcelDate }) {
+  const modalTitle = 'Iniciar nuevo expediente';
+  const createNewLabel = 'Crear nuevo perfil';
+  const createReingresoLabel = 'Agregar como reingreso';
   const [formData, setFormData] = useState(() => {
     const currentDateLocal = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000)
       .toISOString()
@@ -83,6 +87,23 @@ export default function NewPatientModal({ patients, mode = 'normal', onClose, on
       .sort((a, b) => new Date(b.demographics.ingreso) - new Date(a.demographics.ingreso));
   }, [duplicateMatch, patients]);
 
+  const activeRoomConflict = useMemo(() => {
+    const room = normalizeRoomValue(formData.habitacion);
+    if (!room) return null;
+
+    return patients.find((p) => {
+      if (p.deleted) return false;
+      if (p.demographics?.egreso) return false;
+      return normalizeRoomValue(p.demographics?.habitacion) === room;
+    }) || null;
+  }, [formData.habitacion, patients]);
+
+  const roomConflictMessage = activeRoomConflict
+    ? `La habitación ${formData.habitacion || '-'} ya está ocupada por ${activeRoomConflict.demographics?.nombre || 'otro paciente activo'}.`
+    : '';
+
+  const disableCreateActions = Boolean(activeRoomConflict);
+
   return (
     <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden flex flex-col max-h-[90vh]">
@@ -125,6 +146,13 @@ export default function NewPatientModal({ patients, mode = 'normal', onClose, on
             onChange={(e) => setFormData({ ...formData, habitacion: e.target.value })}
             placeholder="Ej. 401-B"
           />
+
+          {activeRoomConflict && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <p className="font-semibold">Habitación ocupada</p>
+              <p>{roomConflictMessage}</p>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4">
             <FormInput
@@ -204,14 +232,18 @@ export default function NewPatientModal({ patients, mode = 'normal', onClose, on
 
               <div className="flex flex-col sm:flex-row gap-2 mt-4">
                 <button
+                  disabled={disableCreateActions}
                   onClick={() => onCreateReingreso(duplicateMatch, formData)}
-                  className="flex-1 bg-amber-600 hover:bg-amber-700 text-white py-2 px-3 rounded-md font-bold shadow transition flex items-center justify-center text-sm"
+                  className={`flex-1 py-2 px-3 rounded-md font-bold shadow transition flex items-center justify-center text-sm ${disableCreateActions ? 'bg-amber-300 text-amber-100 cursor-not-allowed' : 'bg-amber-600 hover:bg-amber-700 text-white'}`}
+                  title={disableCreateActions ? roomConflictMessage : createReingresoLabel}
                 >
                   <Layers className="w-4 h-4 mr-2" /> {createReingresoLabel}
                 </button>
                 <button
+                  disabled={disableCreateActions}
                   onClick={() => onCreateNew(formData)}
-                  className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 py-2 px-3 rounded-md font-bold shadow-sm transition flex items-center justify-center text-sm"
+                  className={`flex-1 py-2 px-3 rounded-md font-bold shadow-sm transition flex items-center justify-center text-sm ${disableCreateActions ? 'bg-slate-100 border border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border border-slate-300 hover:bg-slate-50 text-slate-700'}`}
+                  title={disableCreateActions ? roomConflictMessage : createNewLabel}
                 >
                   <UserPlus className="w-4 h-4 mr-2" /> {createNewLabel}
                 </button>
@@ -221,8 +253,10 @@ export default function NewPatientModal({ patients, mode = 'normal', onClose, on
 
           {!duplicateMatch && (
             <button
+              disabled={disableCreateActions}
               onClick={() => onCreateNew(formData)}
-              className="mt-6 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-lg shadow transition-colors flex items-center justify-center"
+              className={`mt-6 w-full font-bold py-2.5 px-4 rounded-lg shadow transition-colors flex items-center justify-center ${disableCreateActions ? 'bg-blue-300 text-blue-100 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}
+              title={disableCreateActions ? roomConflictMessage : createNewLabel}
             >
               {createNewLabel}
             </button>
