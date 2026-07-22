@@ -8,6 +8,8 @@ const {
   replaceUsers,
   replacePatients,
   upsertPatient,
+  getDilutionsTable,
+  saveDilutionsTable,
   listUsers,
   acquirePatientEditLock,
   releasePatientEditLock,
@@ -153,6 +155,32 @@ app.put('/api/sync/patient', async (req, res) => {
     res.json({ ok: true, id: patient.id });
   } catch (error) {
     res.status(500).json({ error: 'No se pudo sincronizar el paciente.' });
+  }
+});
+
+app.get('/api/dilutions', async (_req, res) => {
+  try {
+    const table = await getDilutionsTable();
+    res.json({ dilutionsTable: table });
+  } catch (error) {
+    res.status(500).json({ error: 'No se pudo cargar la tabla de diluciones.' });
+  }
+});
+
+app.put('/api/dilutions', async (req, res) => {
+  const { dilutionsTable } = req.body || {};
+  const sourceClientId = String(req.header('x-client-id') || '');
+
+  if (!dilutionsTable || typeof dilutionsTable !== 'object') {
+    return res.status(400).json({ error: 'dilutionsTable valido es obligatorio.' });
+  }
+
+  try {
+    const result = await saveDilutionsTable(dilutionsTable);
+    broadcastSseEvent('dilutions-updated', { ts: Date.now() }, { excludeClientId: sourceClientId });
+    res.json({ ok: true, updatedAt: result.updatedAt });
+  } catch (error) {
+    res.status(500).json({ error: 'No se pudo sincronizar la tabla de diluciones.' });
   }
 });
 

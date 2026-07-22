@@ -686,8 +686,10 @@ export default function App() {
   });
   const loadedFromDbRef = useRef(false);
   const patientsSyncTimerRef = useRef(null);
+  const dilutionsSyncTimerRef = useRef(null);
   const skipNextUsersSyncRef = useRef(false);
   const skipNextPatientsSyncRef = useRef(false);
+  const skipNextDilutionsSyncRef = useRef(false);
   const remoteRefreshTimerRef = useRef(null);
   const enteringPatientRef = useRef(false);
   const previousPatientsRef = useRef(initialPatients);
@@ -702,7 +704,10 @@ export default function App() {
   const handleDilutionsTableChange = useCallback((nextTable) => {
     setDilutionsTable((prev) => {
       const resolved = typeof nextTable === 'function' ? nextTable(prev) : nextTable;
-      return normalizeDilutionsTable(resolved);
+      return normalizeDilutionsTable({
+        ...resolved,
+        updatedAt: Date.now(),
+      });
     });
   }, []);
 
@@ -920,6 +925,9 @@ export default function App() {
         if (!mounted) return;
         const incomingUsers = Array.isArray(data?.users) ? data.users : initialUsers;
         const incomingPatients = Array.isArray(data?.patients) ? data.patients : [];
+        const remoteDilutions = data?.dilutionsTable ? normalizeDilutionsTable(data.dilutionsTable) : null;
+        const fallbackDilutions = getStoredDilutionsTable();
+        const nextDilutionsTable = remoteDilutions || fallbackDilutions;
         const validUserIds = new Set(incomingUsers.map((u) => u.id));
         const normalizedPatients = incomingPatients.map((p) =>
           sanitizePatientPresence(p, validUserIds, { dropStale: true, keepMissingTimestamps: true })
@@ -933,6 +941,8 @@ export default function App() {
         });
 
         setUsers(incomingUsers);
+        skipNextDilutionsSyncRef.current = Boolean(remoteDilutions);
+  setDilutionsTable(nextDilutionsTable);
         previousPatientsRef.current = mergedPatients;
         setPatients(mergedPatients);
         setSyncError('');
@@ -995,6 +1005,7 @@ export default function App() {
         const data = await apiFetch('/api/bootstrap');
         const incomingUsers = Array.isArray(data?.users) ? data.users : initialUsers;
         const incomingPatients = Array.isArray(data?.patients) ? data.patients : [];
+        const incomingDilutions = data?.dilutionsTable ? normalizeDilutionsTable(data.dilutionsTable) : null;
         const validUserIds = new Set(incomingUsers.map((u) => u.id));
         const normalizedPatients = incomingPatients.map((p) =>
           sanitizePatientPresence(p, validUserIds, { dropStale: true, keepMissingTimestamps: true })
@@ -1009,6 +1020,10 @@ export default function App() {
 
         skipNextUsersSyncRef.current = true;
         skipNextPatientsSyncRef.current = true;
+        if (incomingDilutions) {
+          skipNextDilutionsSyncRef.current = true;
+          setDilutionsTable(incomingDilutions);
+        }
         setUsers(incomingUsers);
         previousPatientsRef.current = mergedPatients;
         setPatients(mergedPatients);
@@ -1032,6 +1047,7 @@ export default function App() {
           eventSource = new EventSource(`${apiBase}/api/events?clientId=${clientId}`);
           eventSource.addEventListener('users-updated', scheduleRefresh);
           eventSource.addEventListener('patients-updated', scheduleRefresh);
+          eventSource.addEventListener('dilutions-updated', scheduleRefresh);
           eventSource.onerror = () => {
             if (eventSource) eventSource.close();
             if (!disposed) reconnectTimer = setTimeout(connect, 2000);
@@ -1064,6 +1080,34 @@ export default function App() {
       body: JSON.stringify({ users }),
     }).catch(() => setSyncError('No se pudo sincronizar usuarios con BD.'));
   }, [users]);
+
+  useEffect(() => {
+    if (!loadedFromDbRef.current) return;
+
+    if (skipNextDilutionsSyncRef.current) {
+      skipNextDilutionsSyncRef.current = false;
+      return;
+    }
+
+    if (dilutionsSyncTimerRef.current) clearTimeout(dilutionsSyncTimerRef.current);
+    dilutionsSyncTimerRef.current = setTimeout(() => {
+      apiFetch('/api/dilutions', {
+        method: 'PUT',
+        body: JSON.stringify({
+          dilutionsTable: normalizeDilutionsTable({
+            ...dilutionsTable,
+            updatedAt: Date.now(),
+          }),
+        }),
+      })
+        .then(() => setSyncError(''))
+        .catch(() => setSyncError('No se pudo sincronizar la tabla de diluciones con BD.'));
+    }, 220);
+
+    return () => {
+      if (dilutionsSyncTimerRef.current) clearTimeout(dilutionsSyncTimerRef.current);
+    };
+  }, [dilutionsTable]);
 
   useEffect(() => {
     const prevPatients = previousPatientsRef.current;

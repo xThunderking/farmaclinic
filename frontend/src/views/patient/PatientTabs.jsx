@@ -827,7 +827,7 @@ function ConciliationTab({ patient, updatePatient }) {
         {conc.egresoNA ? (
           <div className="p-4 bg-slate-100 text-slate-500 rounded border border-slate-200 italic print:bg-transparent">Conciliación al egreso marcada como No Aplica.</div>
         ) : (
-          <ConciliationTable items={conc.egreso || []} type="egreso" onUpdate={updateItem} onRemove={removeItem} />
+          <ConciliationTable items={conc.egreso || []} type="egreso" onUpdate={updateItem} onRemove={removeItem} enableKeyboardNavigation />
         )}
       </section>
     </div>

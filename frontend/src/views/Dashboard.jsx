@@ -193,6 +193,20 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
     return match ? Number(match[0]) : null;
   };
 
+  const matchesMonthYearFilter = (patient, options = {}) => {
+    const useEgresoDate = options.useEgresoDate === true;
+    const dateToFilter = useEgresoDate
+      ? patient?.demographics?.egreso
+      : patient?.demographics?.ingreso;
+    if (!filterMonth && !filterYear) return true;
+    if (!dateToFilter) return false;
+
+    const [y, m] = String(dateToFilter).split('-');
+    if (filterYear && y !== filterYear) return false;
+    if (filterMonth && m !== filterMonth) return false;
+    return true;
+  };
+
   // Lógica de Filtros y Vistas General
   const filteredPatients = patients.filter(p => {
     if (view === 'papelera') {
@@ -203,13 +217,7 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
       if (view === 'egresados' && !p.demographics.egreso) return false;
     }
 
-    const dateToFilter = p.demographics.ingreso;
-    if (filterMonth || filterYear) {
-      if (!dateToFilter) return false;
-      const [y, m] = dateToFilter.split('-');
-      if (filterYear && y !== filterYear) return false;
-      if (filterMonth && m !== filterMonth) return false;
-    }
+    if (!matchesMonthYearFilter(p, { useEgresoDate: view === 'egresados' })) return false;
 
     if (searchTerm) {
       const term = searchTerm.toLowerCase();
@@ -274,9 +282,33 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
 
   // Métricas de Pacientes
   const activeCount = patients.filter(p => !p.deleted && !p.demographics.egreso).length;
-  const dischargedCount = patients.filter(p => !p.deleted && p.demographics.egreso).length;
-  const atbCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.perfilFarmaco.some(f => f.categoria === 'Antibiótico' && f.estado === 'Activo')).length;
-  const altoRiesgoCount = patients.filter(p => !p.deleted && !p.demographics.egreso && p.perfilFarmaco.some(f => f.categoria === 'Alto Riesgo' && f.estado === 'Activo')).length;
+  const dischargedCount = patients.filter((p) => {
+    if (p.deleted || !p.demographics.egreso) return false;
+    if (view !== 'egresados') return true;
+    return matchesMonthYearFilter(p, { useEgresoDate: true });
+  }).length;
+  const atbCount = patients.filter((p) => {
+    if (p.deleted) return false;
+    if (view === 'egresados') {
+      if (!p.demographics.egreso) return false;
+      if (!matchesMonthYearFilter(p, { useEgresoDate: true })) return false;
+    } else if (p.demographics.egreso) {
+      return false;
+    }
+
+    return p.perfilFarmaco.some((f) => f.categoria === 'Antibiótico' && f.estado === 'Activo');
+  }).length;
+  const altoRiesgoCount = patients.filter((p) => {
+    if (p.deleted) return false;
+    if (view === 'egresados') {
+      if (!p.demographics.egreso) return false;
+      if (!matchesMonthYearFilter(p, { useEgresoDate: true })) return false;
+    } else if (p.demographics.egreso) {
+      return false;
+    }
+
+    return p.perfilFarmaco.some((f) => f.categoria === 'Alto Riesgo' && f.estado === 'Activo');
+  }).length;
 
   // Lógica para Vista de PRM
   let allPrms = [];

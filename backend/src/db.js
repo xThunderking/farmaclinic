@@ -51,6 +51,15 @@ async function applySchema() {
       KEY idx_episodio_edit_locks_user (user_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS diluciones_tabla (
+      id TINYINT NOT NULL,
+      datos_json LONGTEXT NOT NULL,
+      actualizado_en BIGINT NOT NULL,
+      creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
 }
 
 async function seedUsersIfEmpty() {
@@ -375,11 +384,44 @@ async function listPatients() {
     .filter(Boolean);
 }
 
+async function getDilutionsTable() {
+  const db = await initPool();
+  const [rows] = await db.execute('SELECT datos_json FROM diluciones_tabla WHERE id = 1 LIMIT 1');
+  const raw = rows?.[0]?.datos_json;
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function saveDilutionsTable(table) {
+  const db = await initPool();
+  const payload = JSON.stringify(table || {});
+  const updatedAt = Number(table?.updatedAt || Date.now());
+
+  await db.execute(
+    `
+      INSERT INTO diluciones_tabla (id, datos_json, actualizado_en)
+      VALUES (1, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        datos_json = VALUES(datos_json),
+        actualizado_en = VALUES(actualizado_en)
+    `,
+    [payload, updatedAt]
+  );
+
+  return { ok: true, updatedAt };
+}
+
 async function bootstrap() {
-  const [users, patients] = await Promise.all([listUsers(), listPatients()]);
+  const [users, patients, dilutionsTable] = await Promise.all([listUsers(), listPatients(), getDilutionsTable()]);
   return {
     users,
     patients,
+    dilutionsTable,
   };
 }
 
@@ -453,6 +495,8 @@ module.exports = {
   listUsers,
   replaceUsers,
   listPatients,
+  getDilutionsTable,
+  saveDilutionsTable,
   replacePatients,
   upsertPatient,
   bootstrap,
