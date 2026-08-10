@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  CalendarClock,
   CheckCircle,
   ChevronLeft,
   ChevronRight,
+  Clock3,
   CircleHelp,
   Copy,
   Eye,
@@ -912,6 +914,7 @@ function ConciliationTable({ items, type, onUpdate, onRemove, onSendToPharma, en
 function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTable }) {
   const items = patient.perfilFarmaco || [];
   const solItems = patient.solucionesIV || [];
+  const [pharmaSearch, setPharmaSearch] = useState('');
   const conc = patient.conciliacion || {
     ingresoNA: false,
     egresoNA: false,
@@ -929,6 +932,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
   const [deleteModal, setDeleteModal] = useState({ open: false, type: 'pharma', itemId: '', label: '' });
   const [reviewedMedications, setReviewedMedications] = useState({});
   const [showDilutionsModal, setShowDilutionsModal] = useState(false);
+  const [showDoseScheduleModal, setShowDoseScheduleModal] = useState(false);
   const [dilutionSearch, setDilutionSearch] = useState('');
   const [medDilutionModal, setMedDilutionModal] = useState({ open: false, medicationName: '', rows: [] });
   const persistedPharmaById = useMemo(
@@ -1091,6 +1095,119 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
     return fields.some((field) => normalizeFieldValue(currentItem[field]) !== normalizeFieldValue(persistedItem[field]));
   };
 
+  const getTodayIso = () => {
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  const formatHourMinute = (dateObj) => `${String(dateObj.getHours()).padStart(2, '0')}:${String(dateObj.getMinutes()).padStart(2, '0')}`;
+
+  const getFrequencyBadge = (rawFrequency = '') => {
+    const parsed = parseFrequency(rawFrequency);
+    if (parsed.value) {
+      return parsed.unit === 'min' ? `c/${parsed.value}m` : `c/${parsed.value}h`;
+    }
+
+    const lower = String(rawFrequency || '').toLowerCase();
+    if (lower.includes('dosis')) return 'DU';
+    if (lower.includes('continua')) return 'Cont';
+    if (lower.includes('esquema')) return 'Esq';
+    if (lower.includes('reg')) return 'Esp';
+    return '--';
+  };
+
+  const buildDoseTimesForDay = (medication, targetIsoDate) => {
+    const rawFrequency = String(medication?.frecuencia || '').trim();
+    const parsed = parseFrequency(rawFrequency);
+    const firstDoseTime = String(medication?.horaPrimeraDosis || '').trim();
+    const baseDateIso = String(medication?.seguimientoBaseDate || medication?.fechaInicio || '').slice(0, 10);
+
+    if (!firstDoseTime || !/^\d{2}:\d{2}$/.test(firstDoseTime)) return [];
+    if (!baseDateIso || !/^\d{4}-\d{2}-\d{2}$/.test(baseDateIso)) return [];
+
+    const dayStart = new Date(`${targetIsoDate}T00:00:00`);
+    const dayEnd = new Date(`${targetIsoDate}T23:59:59`);
+    const firstDoseDateTime = new Date(`${baseDateIso}T${firstDoseTime}:00`);
+    if (!Number.isFinite(firstDoseDateTime.getTime())) return [];
+
+    const lower = rawFrequency.toLowerCase();
+    if (lower.includes('dosis')) {
+      return baseDateIso === targetIsoDate ? [firstDoseTime] : [];
+    }
+
+    if (!parsed.value) return [];
+
+    const intervalMinutes = parsed.unit === 'min' ? Number(parsed.value) : Number(parsed.value) * 60;
+    if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) return [];
+    const intervalMs = intervalMinutes * 60 * 1000;
+
+    const useManualDoseCount = medication?.seguimientoUsarCantidadDosis === true;
+    const manualDoseCount = Number(sanitizeFrequencyNumber(medication?.seguimientoDosisCantidad || ''));
+    const hasDoseLimit = useManualDoseCount && Number.isFinite(manualDoseCount) && manualDoseCount > 0;
+    const lastDoseTs = hasDoseLimit
+      ? (firstDoseDateTime.getTime() + ((manualDoseCount - 1) * intervalMs))
+      : Number.POSITIVE_INFINITY;
+
+    let currentTs = firstDoseDateTime.getTime();
+    if (currentTs < dayStart.getTime()) {
+      const jumps = Math.ceil((dayStart.getTime() - currentTs) / intervalMs);
+      currentTs += jumps * intervalMs;
+    }
+
+    const times = [];
+    while (currentTs <= dayEnd.getTime() && currentTs <= lastDoseTs) {
+      const currentDate = new Date(currentTs);
+      times.push(formatHourMinute(currentDate));
+      currentTs += intervalMs;
+      if (times.length >= 24) break;
+    }
+
+    return times;
+  };
+
+  const todayDoseSchedule = useMemo(() => {
+    const targetIsoDate = getTodayIso();
+
+    const entries = (items || [])
+      .filter((item) => item?.estado === 'Activo')
+      .map((item) => {
+        const times = buildDoseTimesForDay(item, targetIsoDate);
+        return {
+          id: item.id,
+          name: String(item.principio || '').trim() || 'Medicamento sin nombre',
+          dose: String(item.dosis || '').trim(),
+          route: String(item.via || '').trim(),
+          presentation: String(item.presentacion || '').trim(),
+          frequencyBadge: getFrequencyBadge(item.frecuencia),
+          frequencyRaw: String(item.frecuencia || '').trim(),
+          times,
+        };
+      })
+      .filter((entry) => entry.times.length > 0)
+      .sort((a, b) => (a.times[0] || '').localeCompare(b.times[0] || ''));
+
+    return {
+      targetIsoDate,
+      entries,
+    };
+  }, [items]);
+
+  const doseTimelineGroups = useMemo(() => {
+    const grouped = new Map();
+    todayDoseSchedule.entries.forEach((entry) => {
+      entry.times.forEach((time) => {
+        if (!grouped.has(time)) grouped.set(time, []);
+        grouped.get(time).push(entry);
+      });
+    });
+    return Array.from(grouped.entries())
+      .map(([time, medications]) => ({ time, medications }))
+      .sort((a, b) => a.time.localeCompare(b.time));
+  }, [todayDoseSchedule]);
+
   const recalculateInfusionFields = (item, field) => {
     const updatedItem = { ...item };
     const v = parseFloat(updatedItem.volumen);
@@ -1123,6 +1240,33 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
     updatePatient({ perfilFarmaco: [...items, newItem] });
   };
 
+  const isSingleDoseFrequency = (frequency = '') => {
+    const normalized = String(frequency || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
+    return normalized === 'unica' || normalized.includes('dosis unica');
+  };
+
+  useEffect(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    let changed = false;
+    const synchronizedItems = items.map((item) => {
+      const isOperatingRoom = item.quirofano === true || String(item.quirofano || '').toLowerCase() === 'true';
+      const shouldBeSuspended = isSingleDoseFrequency(item.frecuencia) || isOperatingRoom;
+      if (!shouldBeSuspended || item.estado === 'Suspendido') return item;
+      changed = true;
+      return {
+        ...item,
+        estado: 'Suspendido',
+        fechaSuspension: item.fechaSuspension || today,
+      };
+    });
+
+    if (changed) updatePatient({ perfilFarmaco: synchronizedItems });
+  }, [items, updatePatient]);
+
   const updateItem = (id, field, value) => {
     const newList = items.map((item) => {
       if (item.id !== id) return item;
@@ -1134,6 +1278,19 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
         return {
           ...item,
           frecuencia: buildFrequencyValue(nextValue, nextUnit),
+          ultimaDosisNotificadaAt: 0,
+        };
+      }
+
+      if (field === 'frecuenciaPreset') {
+        const nextFrequency = String(value || '');
+        const isSingleDose = isSingleDoseFrequency(nextFrequency);
+        const shouldAutoSuspend = isSingleDose || item.quirofano === true;
+        return {
+          ...item,
+          frecuencia: nextFrequency,
+          estado: shouldAutoSuspend ? 'Suspendido' : 'Activo',
+          fechaSuspension: shouldAutoSuspend ? (item.fechaSuspension || new Date().toISOString().slice(0, 10)) : '',
           ultimaDosisNotificadaAt: 0,
         };
       }
@@ -1159,6 +1316,15 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
       }
 
       let updatedItem = { ...item, [field]: value };
+      if (field === 'quirofano') {
+        const isSingleDose = isSingleDoseFrequency(item.frecuencia);
+        const shouldAutoSuspend = value === true || isSingleDose;
+        updatedItem = {
+          ...updatedItem,
+          estado: shouldAutoSuspend ? 'Suspendido' : 'Activo',
+          fechaSuspension: shouldAutoSuspend ? (item.fechaSuspension || new Date().toISOString().slice(0, 10)) : '',
+        };
+      }
       if (field === 'horaPrimeraDosis') {
         const todayLocal = new Date().toISOString().slice(0, 10);
         updatedItem = {
@@ -1287,10 +1453,35 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
     });
   };
 
-  const pendientes = items.filter((i) => !CATEGORIAS_FARMACO.includes(i.categoria));
-  const atbs = items.filter((i) => i.categoria === 'Antibiótico');
-  const altos = items.filter((i) => i.categoria === 'Alto Riesgo');
-  const gens = items.filter((i) => i.categoria === 'General');
+  const normalizedPharmaSearch = String(pharmaSearch || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+
+  const filteredPharmaItems = items.filter((item) => {
+    if (!normalizedPharmaSearch) return true;
+
+    const haystack = [
+      item?.principio,
+      item?.marcaComercial,
+      item?.dosis,
+      item?.categoria,
+      item?.frecuencia,
+    ]
+      .map((value) => String(value || ''))
+      .join(' ')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+
+    return haystack.includes(normalizedPharmaSearch);
+  });
+
+  const pendientes = filteredPharmaItems.filter((i) => !CATEGORIAS_FARMACO.includes(i.categoria));
+  const atbs = filteredPharmaItems.filter((i) => i.categoria === 'Antibiótico');
+  const altos = filteredPharmaItems.filter((i) => i.categoria === 'Alto Riesgo');
+  const gens = filteredPharmaItems.filter((i) => i.categoria === 'General');
   const pharmaNavigationIds = useMemo(() => items.map((med) => med.id), [items]);
 
   const goToAdjacentPharmaModal = useCallback((direction) => {
@@ -1358,15 +1549,80 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
   }, [detailModal, selectedPharmaItem, selectedSolucionItem]);
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center border-b pb-2">
-        <h2 className="text-2xl font-bold text-slate-800">Prescripciones Intrahospitalarias</h2>
-        <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-          <button onClick={() => setShowDilutionsModal(true)} className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><FileText className="w-4 h-4 mr-1" /> Tabla de Diluciones</button>
-          <button onClick={addSolucion} className="w-full sm:w-auto bg-cyan-600 hover:bg-cyan-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Solución IV</button>
-          <button onClick={addItem} className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm flex items-center justify-center font-medium shadow-sm print:hidden"><Plus className="w-4 h-4 mr-1" /> Añadir Fármaco</button>
+    <div className="space-y-4">
+      <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-blue-100 bg-blue-50 text-blue-600 shadow-inner"><Activity className="h-5 w-5" /></div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="truncate text-lg font-bold text-slate-900">Cama {patient.demographics.habitacion || '-'} - {patient.demographics.nombre || 'Sin nombre'}</h2>
+                {String(patient.demographics.alergias || '').trim() && <span className="inline-flex items-center rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700"><AlertTriangle className="mr-1 h-3 w-3" /> Alergia: {patient.demographics.alergias}</span>}
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-600">
+                <span>{calculateAge(patient.demographics.fechaNacimiento).years || '-'} años</span>
+                <span>{patient.demographics.peso || '-'} kg</span>
+                <span className="rounded border border-indigo-100 bg-indigo-50 px-2 py-0.5 font-medium text-indigo-700">Perfil farmacoterapéutico</span>
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2 print:hidden">
+            <button onClick={() => setShowDoseScheduleModal(true)} className="inline-flex h-9 flex-1 items-center justify-center rounded-lg bg-indigo-600 px-3 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700 sm:flex-none"><CalendarClock className="mr-1.5 h-4 w-4" /> Ver Horarios de Dosis</button>
+            <button onClick={addSolucion} className="inline-flex h-9 flex-1 items-center justify-center rounded-lg bg-cyan-600 px-3 text-xs font-semibold text-white shadow-sm hover:bg-cyan-700 sm:flex-none"><Plus className="mr-1.5 h-4 w-4" /> Añadir Solución IV</button>
+            <button onClick={addItem} className="inline-flex h-9 flex-1 items-center justify-center rounded-lg bg-blue-600 px-3 text-xs font-semibold text-white shadow-sm hover:bg-blue-700 sm:flex-none"><Plus className="mr-1.5 h-4 w-4" /> Añadir Fármaco</button>
+            <button onClick={() => setShowDilutionsModal(true)} className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-indigo-600 shadow-sm hover:bg-indigo-50" title="Tabla de diluciones"><FileText className="h-4 w-4" /></button>
+          </div>
         </div>
       </div>
+
+      <div className="hidden bg-white border border-slate-200 rounded-lg p-3 shadow-sm">
+        <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">Buscador de fármacos</label>
+        <input
+          type="text"
+          value={pharmaSearch}
+          onChange={(e) => setPharmaSearch(e.target.value)}
+          placeholder="Buscar por principio activo, marca, dosis, categoría o frecuencia..."
+          className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-700 focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+        />
+      </div>
+
+      {showDoseScheduleModal && (
+        <div className="fixed inset-0 z-[96] bg-slate-900/55 backdrop-blur-[1px] print:hidden" onClick={() => setShowDoseScheduleModal(false)}>
+          <aside className="absolute inset-y-0 right-0 flex w-full max-w-[470px] flex-col bg-slate-50 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex min-h-[74px] items-center justify-between bg-indigo-600 px-5 text-white">
+              <div><h3 className="flex items-center gap-2 text-lg font-bold"><Clock3 className="h-5 w-5" /> Línea de Tiempo - Hoy</h3><p className="mt-1 text-xs text-indigo-100">{todayDoseSchedule.targetIsoDate}</p></div>
+              <button onClick={() => setShowDoseScheduleModal(false)} className="rounded-lg p-2 text-indigo-100 hover:bg-white/10 hover:text-white" aria-label="Cerrar línea de tiempo"><X className="h-5 w-5" /></button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6">
+              {doseTimelineGroups.length === 0 ? <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">No hay horarios configurados para hoy. Captura la primera dosis y la frecuencia en los medicamentos activos.</div> : (
+                <div className="relative ml-3 border-l-2 border-slate-200 pb-12 pl-5">
+                  {doseTimelineGroups.map((group, groupIndex) => {
+                    const simultaneous = group.medications.length > 1;
+                    const now = new Date();
+                    const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+                    const previousTime = doseTimelineGroups[groupIndex - 1]?.time;
+                    const showNow = nowTime <= group.time && (!previousTime || nowTime > previousTime);
+                    return <div key={group.time}>
+                      {showNow && <div className="relative mb-7 mt-2 h-px bg-red-500"><span className="absolute -right-1 -top-3 rounded bg-red-500 px-1.5 py-0.5 text-[10px] font-bold text-white">AHORA {nowTime}</span></div>}
+                      <section className="relative mb-8">
+                        <span className={`absolute -left-[27px] top-2 h-3 w-3 rounded-full border-2 border-white ring-1 ${simultaneous ? 'bg-red-500 ring-red-200' : 'bg-blue-500 ring-blue-200'}`} />
+                        <div className="flex items-start gap-3">
+                          <time className={`shrink-0 rounded-md border bg-white px-2 py-1.5 text-lg font-bold shadow-sm ${simultaneous ? 'border-red-200 text-red-600' : 'border-slate-200 text-slate-800'}`}>{group.time}</time>
+                          <div className="min-w-0 flex-1">
+                            {simultaneous && <p className="mb-2 flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-red-600"><AlertTriangle className="h-3 w-3" /> {group.medications.length} fármacos simultáneos</p>}
+                            <div className="space-y-2">{group.medications.map((entry) => <article key={`${group.time}-${entry.id}`} className="rounded-md border border-slate-200 bg-white p-3 shadow-sm"><p className="font-bold text-slate-800">{entry.name} {entry.dose && <span className="text-blue-600">{entry.dose}</span>}</p><p className="mt-1 text-[10px] font-medium uppercase text-slate-400">{entry.route || 'Vía N/D'} | {entry.presentation || 'Presentación N/D'}</p></article>)}</div>
+                          </div>
+                        </div>
+                      </section>
+                    </div>;
+                  })}
+                </div>
+              )}
+            </div>
+          </aside>
+        </div>
+      )}
 
       {showDilutionsModal && (
         <div className="fixed inset-0 z-[95] bg-slate-900/60 backdrop-blur-[1px] flex items-center justify-center p-4 print:hidden" onClick={() => setShowDilutionsModal(false)}>
@@ -1425,7 +1681,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
         </div>
       )}
 
-      <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 flex flex-wrap items-center gap-3">
+      <div className="hidden rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 flex-wrap items-center gap-3">
         <span className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-2 py-1 text-violet-800">
           <span className="inline-block w-3 h-3 rounded-full bg-violet-500" aria-hidden="true"></span>
           PRN (Por Razón Necesaria)
@@ -1440,7 +1696,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
         </span>
       </div>
 
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 flex justify-start sm:justify-end shadow-sm print:bg-transparent print:border-none print:shadow-none mb-4">
+      <div className="hidden bg-blue-50 border border-blue-200 rounded-lg p-2 justify-start sm:justify-end shadow-sm print:bg-transparent print:border-none print:shadow-none mb-4">
         <label className="flex items-center space-x-2 cursor-pointer bg-white px-3 py-1.5 rounded-md shadow-sm border border-blue-200 print:border-none print:shadow-none print:bg-transparent print:p-0 w-full sm:w-auto">
           <input type="checkbox" className="w-4 h-4 text-blue-600 rounded" checked={meta.evaluadoPrevioPrimeraDosis} onChange={(e) => updateMeta('evaluadoPrevioPrimeraDosis', e.target.checked)} />
           <span className="font-semibold text-sm text-slate-800">Idoneidad evaluada antes de 1ra dosis</span>
@@ -1448,7 +1704,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
       </div>
 
       {pendientes.length > 0 && (
-        <PharmaSection
+        <CompactPharmaSection
           title="Clasificación inicial de fármacos"
           items={pendientes}
           updateItem={updateItem}
@@ -1464,7 +1720,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
           theme="blue"
         />
       )}
-      <PharmaSection
+      <CompactPharmaSection
         title="Terapia Antimicrobiana"
         items={atbs}
         updateItem={updateItem}
@@ -1479,7 +1735,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
         dischargeDate={patient.demographics.egreso}
         theme="orange"
       />
-      <PharmaSection
+      <CompactPharmaSection
         title="Medicamentos de Alto Riesgo"
         items={altos}
         updateItem={updateItem}
@@ -1494,7 +1750,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
         dischargeDate={patient.demographics.egreso}
         theme="red"
       />
-      <PharmaSection
+      <CompactPharmaSection
         title="Medicamentos Generales"
         items={gens}
         updateItem={updateItem}
@@ -1510,7 +1766,15 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
         theme="blue"
       />
 
-      <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mb-6 print:border-slate-300 print:shadow-none mt-8">
+      <CompactSolutionsSection items={solItems} updateItem={updateSolucion} onView={openSolucionDetail} onDelete={requestDeleteSolucion} onToggleStatus={updateSolucionStatus} dischargeDate={patient.demographics.egreso} />
+
+      {normalizedPharmaSearch && filteredPharmaItems.length === 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          No hay medicamentos que coincidan con la búsqueda "{pharmaSearch}".
+        </div>
+      )}
+
+      <div className="hidden bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mb-6 print:border-slate-300 print:shadow-none mt-8">
         <div className="px-4 py-2 font-bold border-b bg-cyan-100 text-cyan-900 border-cyan-200 print:bg-slate-100 print:text-black print:border-slate-300">Soluciones Intravenosas (Fluidos)</div>
         <div className="overflow-x-auto md:overflow-x-visible overscroll-x-contain print:overflow-visible" onKeyDownCapture={handleTableArrowNavigation}>
           <table className="w-full min-w-[720px] md:min-w-0 table-fixed text-[11px] md:text-xs lg:text-sm border-collapse">
@@ -1644,12 +1908,73 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
   );
 }
 
+function CompactSolutionsSection({ items, updateItem, onView, onDelete, onToggleStatus, dischargeDate }) {
+  return (
+    <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="flex h-9 items-center justify-between border-b border-cyan-200 bg-cyan-100 px-3 text-xs font-bold uppercase tracking-wide text-cyan-900 lg:text-sm">
+        <span className="flex items-center gap-2"><i className="h-1.5 w-1.5 rounded-full bg-cyan-600" />Soluciones base e hidratación</span>
+        <span className="rounded-full bg-cyan-200 px-2 py-0.5 text-xs">{items.length}</span>
+      </div>
+      <div className="space-y-1.5 p-2">
+        {items.length === 0 && <p className="py-3 text-center text-xs italic text-slate-400">No hay soluciones registradas.</p>}
+        {items.map((item) => {
+          const suspended = item.estado === 'Suspendido';
+          const days = item.fechaInicio ? (calculateDaysOfUse(item.fechaInicio, suspended ? item.fechaSuspension : dischargeDate) || '-') : '-';
+          return <article key={item.id} className={`fc-compact-card flex min-h-[72px] flex-col gap-2 rounded-md border border-l-2 p-2.5 sm:flex-row sm:items-center lg:p-3 ${suspended ? 'border-slate-300 bg-slate-100 opacity-70' : 'border-cyan-100 border-l-cyan-500 bg-cyan-50/30'}`}>
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border border-slate-200 bg-slate-100 text-transparent" aria-hidden="true"><CheckCircle className="h-4 w-4" /></span>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <input value={item.solucion || ''} onChange={(e) => updateItem(item.id, 'solucion', e.target.value)} placeholder="SOLUCIÓN FISIOLÓGICA 0.9%" className={`min-w-[190px] flex-1 border-0 bg-transparent p-0 text-sm font-bold uppercase text-slate-800 focus:ring-0 lg:text-[15px] ${suspended ? 'line-through' : ''}`} />
+                <span className="text-xs text-slate-500">Base</span><i className="h-4 border-l border-slate-300" />
+                <label className="flex items-center bg-blue-50 px-2 py-0.5"><input type="number" value={item.volumen || ''} onChange={(e) => updateItem(item.id, 'volumen', e.target.value)} className="w-14 border-0 bg-transparent p-0 text-center text-sm font-bold text-blue-700 focus:ring-0" /> <span className="text-xs text-blue-700">mL</span></label>
+                <select value={item.frecuencia || 'Continua'} onChange={(e) => updateItem(item.id, 'frecuencia', e.target.value)} className="h-7 rounded border-0 bg-slate-100 py-0 pl-2 pr-7 text-xs font-semibold text-slate-700 focus:ring-1 focus:ring-blue-300"><option value="Dosis Única">Única</option><option value="Continua">Continua</option><option value="Esquema">Esquema</option><option value="PRN">PRN</option><option value="c/ 4 hrs">c/4h</option><option value="c/ 6 hrs">c/6h</option><option value="c/ 8 hrs">c/8h</option><option value="c/ 12 hrs">c/12h</option><option value="c/ 24 hrs">c/24h</option><option value="c/ 48 hrs">c/48h</option><option value="c/ 72 hrs">c/72h</option></select>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] lg:text-xs">
+                <label className="relative"><span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-blue-500">●</span><select value={item.via || 'IV'} onChange={(e) => updateItem(item.id, 'via', e.target.value)} className="h-7 min-w-[120px] rounded border border-slate-200 bg-white py-0 pl-5 pr-7 text-xs text-slate-700 focus:border-blue-300 focus:ring-1 focus:ring-blue-200">{VIAS.map((via) => <option key={via} value={via}>{via}</option>)}</select></label>
+                <label className="relative"><span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-blue-500">◆</span><select value={item.presentacion || 'Bolsa'} onChange={(e) => updateItem(item.id, 'presentacion', e.target.value)} className="h-7 min-w-[100px] rounded border border-slate-200 bg-white py-0 pl-5 pr-7 text-xs text-slate-700 focus:border-blue-300 focus:ring-1 focus:ring-blue-200">{PRESENTACIONES.map((option) => <option key={option} value={option}>{option}</option>)}</select></label>
+                <select value={item.idoneidad || 'Idóneo'} onChange={(e) => updateItem(item.id, 'idoneidad', e.target.value)} className={`h-7 min-w-[100px] rounded border py-0 pl-2 pr-7 text-xs font-semibold focus:ring-1 ${item.idoneidad === 'No Idóneo' ? 'border-red-200 bg-red-50 text-red-700' : item.idoneidad === 'Pendiente' ? 'border-slate-200 bg-slate-100 text-slate-600' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>{IDONEIDAD_OPCIONES.map((option) => <option key={option} value={option}>{option}</option>)}</select><span className="rounded bg-slate-100 px-2 py-0.5 text-slate-500">▣ Día {days}</span>
+                {item.tiempo && <span className="rounded bg-indigo-50 px-2 py-0.5 text-indigo-600">♧ {item.tiempo}h</span>}{item.velocidad && <span className="rounded bg-indigo-50 px-2 py-0.5 text-indigo-600">⌁ {item.velocidad}mL/h</span>}
+              </div>
+            </div>
+            <span className="hidden text-[9px] text-slate-400 lg:block">In: {item.fechaInicio || '-'}</span>
+            <div className="flex shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white"><button onClick={() => onToggleStatus(item.id, suspended ? 'Activo' : 'Suspendido')} className={`h-9 w-9 border-r border-slate-200 ${suspended ? 'text-red-500 hover:bg-red-50' : 'text-emerald-600 hover:bg-emerald-50'}`} title={suspended ? 'Reactivar solución' : 'Suspender solución'}><Pill className="mx-auto h-3.5 w-3.5" /></button><button onClick={() => onView(item.id)} className="h-9 w-9 border-r border-slate-200 text-blue-600 hover:bg-blue-50" title="Ver detalle"><Eye className="mx-auto h-4 w-4" /></button><button onClick={() => onDelete(item)} className="h-9 w-9 text-slate-400 hover:bg-red-50 hover:text-red-600" title="Eliminar"><Trash2 className="mx-auto h-3.5 w-3.5" /></button></div>
+          </article>;
+        })}
+      </div>
+    </section>
+  );
+}
+
+function CompactPharmaSection({ title, items, updateItem, updateItemStatus, onDuplicateItem = () => {}, onDeleteItem, onViewItem, onViewDilution = () => {}, dischargeDate, theme, reviewedMap = {}, onToggleReviewed = () => {} }) {
+  const colors = theme === 'orange' ? 'border-orange-200 bg-orange-100 text-orange-900' : theme === 'red' ? 'border-red-200 bg-red-100 text-red-900' : 'border-blue-200 bg-blue-100 text-blue-900';
+  const dot = theme === 'orange' ? 'bg-orange-500' : theme === 'red' ? 'bg-red-600' : 'bg-blue-600';
+  const edge = theme === 'orange' ? 'border-l-orange-500' : theme === 'red' ? 'border-l-fuchsia-500' : 'border-l-blue-500';
+  const surface = theme === 'orange' ? 'border-orange-100 bg-orange-50/30' : theme === 'red' ? 'border-red-100 bg-red-50/25' : 'border-blue-100 bg-blue-50/25';
+  return <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+    <div className={`flex h-9 items-center justify-between border-b px-3 text-xs font-bold uppercase tracking-wide lg:text-sm ${colors}`}><span className="flex items-center gap-2"><i className={`h-1.5 w-1.5 rounded-full ${dot}`} />{title}</span><span className="rounded-full bg-white/40 px-2 py-0.5 text-xs">{items.length}</span></div>
+    <div className="space-y-1.5 p-2">{items.length === 0 && <p className="py-3 text-center text-xs italic text-slate-400">No hay registros.</p>}{items.map((item) => {
+      const suspended = item.estado === 'Suspendido'; const reviewed = reviewedMap[item.id] === true; const days = item.fechaInicio ? (calculateDaysOfUse(item.fechaInicio, suspended ? item.fechaSuspension : dischargeDate) || '-') : '-';
+      return <article key={item.id} className={`fc-compact-card flex min-h-[74px] flex-col gap-2 rounded-md border border-l-2 p-2.5 sm:flex-row sm:items-center lg:p-3 ${suspended ? 'border-slate-300 bg-slate-100 opacity-65' : `${edge} ${item.prn ? 'border-fuchsia-100 bg-fuchsia-50/60' : item.quirofano ? 'border-amber-200 bg-amber-50/70' : surface}`}`}>
+        <button onClick={() => onToggleReviewed(item.id)} className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border ${reviewed ? 'border-emerald-400 bg-emerald-50 text-emerald-500' : 'border-slate-200 bg-slate-100 text-transparent'}`}><CheckCircle className="h-4 w-4" /></button>
+        <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><input value={item.principio || ''} onChange={(e) => updateItem(item.id, 'principio', e.target.value)} placeholder="MEDICAMENTO" className={`min-w-[130px] max-w-[260px] border-0 bg-transparent p-0 text-sm font-bold uppercase text-slate-800 focus:ring-0 lg:text-[15px] ${suspended ? 'line-through' : ''}`} /><input value={item.marcaComercial || ''} onChange={(e) => updateItem(item.id, 'marcaComercial', e.target.value)} placeholder="Marca" className="w-24 border-0 bg-transparent p-0 text-xs text-slate-500 focus:ring-0" /><i className="h-4 border-l border-slate-300" /><input value={item.dosis || ''} onChange={(e) => updateItem(item.id, 'dosis', e.target.value)} placeholder="Dosis" className="w-20 border-0 bg-blue-50 p-0.5 text-center text-sm font-bold text-blue-700 focus:ring-0" /><select value={item.frecuencia || ''} onChange={(e) => updateItem(item.id, 'frecuenciaPreset', e.target.value)} className="h-7 rounded border-0 bg-slate-100 py-0 pl-2 pr-7 text-xs font-semibold text-slate-700 focus:ring-1 focus:ring-blue-300"><option value="">Frecuencia</option><option value="Dosis Única">Única</option><option value="Continua">Continua</option><option value="Esquema">Esquema</option><option value="PRN">PRN</option><option value="c/ 4 hrs">c/4h</option><option value="c/ 6 hrs">c/6h</option><option value="c/ 8 hrs">c/8h</option><option value="c/ 12 hrs">c/12h</option><option value="c/ 24 hrs">c/24h</option><option value="c/ 48 hrs">c/48h</option><option value="c/ 72 hrs">c/72h</option></select>{item.prn && <span className="rounded bg-fuchsia-600 px-1.5 py-0.5 text-[11px] font-bold text-white">PRN</span>}{item.quirofano && <span className="rounded bg-amber-500 px-1.5 py-0.5 text-[11px] font-bold text-white">QX</span>}</div>
+        <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] lg:text-xs"><label className="relative"><span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-blue-500">●</span><select value={item.via || ''} onChange={(e) => updateItem(item.id, 'via', e.target.value)} className="h-7 min-w-[120px] rounded border border-slate-200 bg-white py-0 pl-5 pr-7 text-xs text-slate-700 focus:border-blue-300 focus:ring-1 focus:ring-blue-200"><option value="">Vía</option>{VIAS.map((via) => <option key={via} value={via}>{via}</option>)}</select></label><label className="relative"><span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-blue-500">◆</span><select value={item.presentacion || ''} onChange={(e) => updateItem(item.id, 'presentacion', e.target.value)} className="h-7 min-w-[100px] rounded border border-slate-200 bg-white py-0 pl-5 pr-7 text-xs text-slate-700 focus:border-blue-300 focus:ring-1 focus:ring-blue-200"><option value="">Presentación</option>{PRESENTACIONES.map((option) => <option key={option} value={option}>{option}</option>)}</select></label><select value={item.idoneidad || 'Pendiente'} onChange={(e) => updateItem(item.id, 'idoneidad', e.target.value)} className={`h-7 min-w-[100px] rounded border py-0 pl-2 pr-7 text-xs font-semibold focus:ring-1 ${item.idoneidad === 'Idóneo' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : item.idoneidad === 'No Idóneo' ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 bg-slate-100 text-slate-600'}`}>{IDONEIDAD_OPCIONES.map((option) => <option key={option} value={option}>{option}</option>)}</select><span className="rounded bg-slate-100 px-2 py-0.5 text-slate-500">▣ Día {days}</span>{item.volumen && <span className="rounded bg-indigo-50 px-2 py-0.5 text-indigo-600">♧ {item.volumen}mL</span>}{item.tiempo && <span className="rounded bg-indigo-50 px-2 py-0.5 text-indigo-600">⌛ {item.tiempo}h</span>}{item.velocidad && <span className="rounded bg-indigo-50 px-2 py-0.5 text-indigo-600">⌁ {item.velocidad}mL/h</span>}</div></div>
+        <span className="hidden text-[9px] text-slate-400 lg:block">In: {item.fechaInicio || '-'}</span><div className="flex shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white"><button onClick={() => updateItemStatus(item.id, suspended ? 'Activo' : 'Suspendido')} className={`h-9 w-9 border-r border-slate-200 ${suspended ? 'text-red-500 hover:bg-red-50' : 'text-emerald-600 hover:bg-emerald-50'}`} title={suspended ? 'Reactivar medicamento' : 'Suspender medicamento'}><Pill className="mx-auto h-3.5 w-3.5" /></button><button onClick={() => onViewItem(item.id)} className="h-9 w-9 border-r border-slate-200 text-blue-600 hover:bg-blue-50" title="Ver detalle"><Eye className="mx-auto h-4 w-4" /></button><button onClick={() => onViewDilution(item.principio)} className="h-9 w-9 border-r border-slate-200 text-cyan-600 hover:bg-cyan-50" title="Ver dilución"><Microscope className="mx-auto h-4 w-4" /></button><button onClick={() => onDuplicateItem(item)} className="h-9 w-9 border-r border-slate-200 text-slate-500 hover:bg-slate-50" title="Duplicar"><Copy className="mx-auto h-3.5 w-3.5" /></button><button onClick={() => onDeleteItem(item)} className="h-9 w-9 text-slate-400 hover:bg-red-50 hover:text-red-600" title="Eliminar"><Trash2 className="mx-auto h-3.5 w-3.5" /></button></div>
+      </article>;
+    })}</div>
+  </section>;
+}
+
 function PharmaSection({ title, items, updateItem, updateItemStatus, onDuplicateItem = () => {}, onDeleteItem, onViewItem, onViewDilution = () => {}, hasModalOnlyChanges, dischargeDate, theme, reviewedMap = {}, onToggleReviewed = () => {} }) {
-  const headerColors = { orange: 'bg-orange-100 text-orange-900 border-orange-200', red: 'bg-red-100 text-red-900 border-red-200', blue: 'bg-slate-100 text-slate-800 border-slate-200' };
+  const headerColors = {
+    orange: 'bg-orange-100/70 text-orange-900 border-orange-200',
+    red: 'bg-red-100/70 text-red-900 border-red-200',
+    blue: 'bg-slate-100 text-slate-800 border-slate-200',
+  };
   const isMarSection = title === 'Medicamentos de Alto Riesgo';
   const isInitialClassificationSection = title === 'Clasificación inicial de fármacos';
   const categoryOrder = ['General', 'Antibiótico', 'Alto Riesgo'];
   const [categoryPicker, setCategoryPicker] = useState({ open: false, item: null });
+  const frequencyOptions = ['Dosis Única', 'c/ 4 hrs', 'c/ 6 hrs', 'c/ 8 hrs', 'c/ 12 hrs', 'c/ 24 hrs', 'Continua', 'Esquema', 'Rég. Especial'];
 
   const getCategoryMeta = (category = '') => {
     if (!String(category || '').trim()) {
@@ -1691,9 +2016,77 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, onDuplicate
     return 0;
   });
 
+  const resolveFrequencySelection = (value = '') => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (frequencyOptions.includes(raw)) return raw;
+
+    const parsed = parseFrequency(raw);
+    if (parsed?.value) {
+      const candidate = `c/ ${parsed.value} ${parsed.unit}`;
+      if (frequencyOptions.includes(candidate)) return candidate;
+    }
+
+    return raw;
+  };
+
+  const getTodayIsoDate = () => {
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  const getMedicationTimesForToday = (medication) => {
+    const firstDoseTime = String(medication?.horaPrimeraDosis || '').trim();
+    const baseDateIso = String(medication?.seguimientoBaseDate || medication?.fechaInicio || '').slice(0, 10);
+    const rawFrequency = String(medication?.frecuencia || '').trim();
+
+    if (!firstDoseTime || !/^\d{2}:\d{2}$/.test(firstDoseTime)) return [];
+    if (!baseDateIso || !/^\d{4}-\d{2}-\d{2}$/.test(baseDateIso)) return [];
+
+    const todayIso = getTodayIsoDate();
+    const todayStart = new Date(`${todayIso}T00:00:00`).getTime();
+    const todayEnd = new Date(`${todayIso}T23:59:59`).getTime();
+    const firstDoseTs = new Date(`${baseDateIso}T${firstDoseTime}:00`).getTime();
+    if (!Number.isFinite(firstDoseTs)) return [];
+
+    const lower = rawFrequency.toLowerCase();
+    if (lower.includes('dosis')) {
+      return baseDateIso === todayIso ? [firstDoseTime] : [];
+    }
+
+    const parsed = parseFrequency(rawFrequency);
+    const intervalMinutes = parsed.value ? (parsed.unit === 'min' ? Number(parsed.value) : Number(parsed.value) * 60) : 0;
+    if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) return [];
+    const intervalMs = intervalMinutes * 60 * 1000;
+
+    const useManualDoseCount = medication?.seguimientoUsarCantidadDosis === true;
+    const manualDoseCount = Number(sanitizeFrequencyNumber(medication?.seguimientoDosisCantidad || ''));
+    const hasDoseLimit = useManualDoseCount && Number.isFinite(manualDoseCount) && manualDoseCount > 0;
+    const lastDoseTs = hasDoseLimit ? (firstDoseTs + ((manualDoseCount - 1) * intervalMs)) : Number.POSITIVE_INFINITY;
+
+    let currentTs = firstDoseTs;
+    if (currentTs < todayStart) {
+      const jumps = Math.ceil((todayStart - currentTs) / intervalMs);
+      currentTs += jumps * intervalMs;
+    }
+
+    const times = [];
+    while (currentTs <= todayEnd && currentTs <= lastDoseTs) {
+      const doseDate = new Date(currentTs);
+      times.push(`${String(doseDate.getHours()).padStart(2, '0')}:${String(doseDate.getMinutes()).padStart(2, '0')}`);
+      currentTs += intervalMs;
+      if (times.length >= 24) break;
+    }
+
+    return times;
+  };
+
   return (
-    <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-visible mb-6 print:border-slate-300 print:shadow-none">
-      <div className={`px-4 py-2 font-bold border-b ${headerColors[theme]} print:bg-slate-100 print:text-black print:border-slate-300 flex items-center justify-between gap-3`}>
+    <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-visible print:border-slate-300 print:shadow-none">
+      <div className={`px-3 py-2 text-xs font-bold uppercase tracking-wide border-b ${headerColors[theme]} print:bg-slate-100 print:text-black print:border-slate-300 flex items-center justify-between gap-3`}>
         <span className="inline-flex items-center gap-2">
           {isInitialClassificationSection && <Layers className="w-4 h-4" />}
           {title}
@@ -1721,112 +2114,146 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, onDuplicate
         )}
       </div>
 
-      <div className="overflow-x-visible print:overflow-visible" onKeyDownCapture={handleTableArrowNavigation}>
-        <table className="w-full table-fixed text-[10px] sm:text-xs lg:text-sm border-collapse">
-          <thead className="bg-slate-50 border-b print:bg-white">
-            <tr>
-              <th className="p-1 text-center font-semibold uppercase tracking-wide text-[9px] text-slate-600 w-[4%] print:hidden">Rev.</th>
-              <th className="p-1 md:p-1.5 text-center font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[5%]">CAT</th>
-              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[22%]">Principio Activo</th>
-              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[12%]">Marca Com.</th>
-              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[12%]">Dosis</th>
-              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[10%]">Frec.</th>
-              <th className="p-1 md:p-1.5 text-center font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[7%]">Días act.</th>
-              <th className="p-1 md:p-1.5 text-left font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[10%]">F. Inicio</th>
-              <th className="p-1 md:p-1.5 text-center font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[5%]">Estado</th>
-              <th className="p-1 md:p-1.5 text-center font-semibold uppercase tracking-wide text-[10px] text-slate-600 w-[11%] print:hidden">Acciones</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sortedItems.length === 0 && <tr><td colSpan="10" className="p-3 text-center text-slate-400 italic">No hay registros.</td></tr>}
-            {sortedItems.map((item) => {
-              const isSuspended = item.estado === 'Suspendido';
-              const isPrn = item.prn === true;
-              const isQuirofano = item.quirofano === true;
-              const isReviewed = reviewedMap[item.id] === true;
-              const modalOnlyChanged = hasModalOnlyChanges?.(item) === true;
-              const endDate = isSuspended ? item.fechaSuspension : dischargeDate;
-              const daysActive = item.fechaInicio ? (calculateDaysOfUse(item.fechaInicio, endDate) || '-') : '-';
-              const frequency = parseFrequency(item.frecuencia);
-              const categoryMeta = getCategoryMeta(item.categoria);
-              const CategoryIcon = categoryMeta.icon;
+      <div className="p-2 bg-slate-50/50 print:bg-white" onKeyDownCapture={handleTableArrowNavigation}>
+        {sortedItems.length === 0 && (
+          <div className="p-4 text-center text-slate-400 italic bg-white border border-slate-200 rounded-xl">No hay registros.</div>
+        )}
 
-              return (
-                <tr key={item.id} className={`border-b border-slate-200 transition-colors ${isQuirofano ? 'bg-amber-100/80 hover:bg-amber-100/95 [&_input]:bg-amber-50 [&_select]:bg-amber-50 [&_input]:border-amber-200 [&_select]:border-amber-200' : isPrn ? 'bg-violet-100/75 hover:bg-violet-100/90 [&_input]:bg-violet-50 [&_select]:bg-violet-50 [&_input]:border-violet-200 [&_select]:border-violet-200' : isSuspended ? 'bg-slate-100/90 opacity-80 print:opacity-100 print:bg-slate-50' : 'hover:bg-slate-50/70'} ${(isPrn || isQuirofano) && isSuspended ? 'opacity-80 print:opacity-100' : ''}`}>
-                  <td className="p-1 text-center print:hidden">
-                    <button
-                      type="button"
-                      onClick={() => onToggleReviewed(item.id)}
-                      className={`inline-flex h-5 w-5 items-center justify-center rounded border transition ${isReviewed ? 'border-emerald-300 bg-emerald-50 text-emerald-600' : 'border-slate-300 bg-slate-50 text-slate-400 hover:text-slate-500'}`}
-                      title={isReviewed ? 'Revisado' : 'Marcar como revisado'}
-                      aria-label={isReviewed ? 'Revisado' : 'Marcar como revisado'}
-                      aria-pressed={isReviewed}
-                    >
-                      <CheckCircle className="w-3.5 h-3.5" />
-                    </button>
-                  </td>
-                  <td className="p-1 md:p-1.5 text-center">
-                    <button
-                      type="button"
-                      onClick={() => openCategoryPicker(item)}
-                      className={`inline-flex h-7 w-7 lg:h-8 lg:w-8 items-center justify-center rounded-md border transition ${categoryMeta.className}`}
-                      title={`Categoría: ${categoryMeta.label} (clic para elegir destino)`}
-                      aria-label={`Categoría: ${categoryMeta.label} (clic para elegir destino)`}
-                    >
-                      <CategoryIcon className="w-3.5 h-3.5" />
-                    </button>
-                  </td>
-                  <td className="p-1 md:p-1.5"><input type="text" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm font-medium print:border-none print:bg-transparent ${isSuspended ? 'line-through text-slate-500 bg-slate-200' : ''}`} value={item.principio} onChange={(e) => updateItem(item.id, 'principio', e.target.value)} /></td>
-                  <td className="p-1 md:p-1.5"><input type="text" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} placeholder="Opcional" value={item.marcaComercial || ''} onChange={(e) => updateItem(item.id, 'marcaComercial', e.target.value)} /></td>
-                  <td className="p-1 md:p-1.5"><input type="text" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.dosis} onChange={(e) => updateItem(item.id, 'dosis', e.target.value)} /></td>
-                  <td className="p-1 md:p-1.5">
-                    <div className="flex items-center gap-1">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        pattern="[0-9]*"
-                        className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`}
-                        value={frequency.value}
-                        onChange={(e) => updateItem(item.id, 'frecuencia', e.target.value)}
-                        placeholder="0"
-                      />
-                      <select
-                        className={`h-8 lg:h-9 w-[76px] border-slate-300 rounded-md text-xs lg:text-sm p-1 md:p-1.5 font-semibold print:appearance-none print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`}
-                        value={frequency.unit}
-                        onChange={(e) => updateItem(item.id, 'frecuenciaUnidad', e.target.value)}
+        <div className="space-y-2">
+          {sortedItems.map((item) => {
+            const isSuspended = item.estado === 'Suspendido';
+            const isPrn = item.prn === true;
+            const isQuirofano = item.quirofano === true;
+            const isReviewed = reviewedMap[item.id] === true;
+            const modalOnlyChanged = hasModalOnlyChanges?.(item) === true;
+            const endDate = isSuspended ? item.fechaSuspension : dischargeDate;
+            const daysActive = item.fechaInicio ? (calculateDaysOfUse(item.fechaInicio, endDate) || '-') : '-';
+            const categoryMeta = getCategoryMeta(item.categoria);
+            const CategoryIcon = categoryMeta.icon;
+            const frequencySelection = resolveFrequencySelection(item.frecuencia);
+            const hasCustomFrequency = frequencySelection && !frequencyOptions.includes(frequencySelection);
+            const doseTimesToday = item.estado === 'Activo' ? getMedicationTimesForToday(item) : [];
+            const inputClass = `min-w-0 w-full h-9 lg:h-10 rounded-lg border text-sm shadow-sm print:border-none print:bg-transparent ${isSuspended ? 'border-slate-300 bg-slate-200 text-slate-500' : 'border-slate-200 bg-white text-slate-700 focus:border-blue-400 focus:ring-2 focus:ring-blue-100'}`;
+            const cardClass = isSuspended
+              ? 'bg-slate-200/55 border-slate-300 border-l-slate-400 opacity-80 print:opacity-100 print:bg-slate-50'
+              : isQuirofano
+                ? 'bg-amber-50/60 border-amber-200 border-l-amber-500'
+                : isPrn
+                  ? 'bg-violet-50/60 border-violet-200 border-l-violet-500'
+                  : 'bg-white border-slate-200 border-l-blue-500';
+
+            return (
+              <article key={item.id} className={`rounded-lg border border-l-2 shadow-sm transition-colors ${cardClass}`}>
+                <div className="p-2.5 flex flex-col gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => onToggleReviewed(item.id)}
+                        className={`inline-flex h-6 w-6 items-center justify-center rounded border transition print:hidden ${isReviewed ? 'border-emerald-300 bg-emerald-50 text-emerald-600' : 'border-slate-300 bg-slate-50 text-slate-400 hover:text-slate-500'}`}
+                        title={isReviewed ? 'Revisado' : 'Marcar como revisado'}
+                        aria-label={isReviewed ? 'Revisado' : 'Marcar como revisado'}
+                        aria-pressed={isReviewed}
                       >
-                        <option value="hrs">hrs</option>
-                        <option value="min">min</option>
-                      </select>
+                        <CheckCircle className="w-4 h-4" />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => openCategoryPicker(item)}
+                        className={`inline-flex h-8 w-8 items-center justify-center rounded-lg border shadow-sm transition ${categoryMeta.className}`}
+                        title={`Categoría: ${categoryMeta.label} (clic para elegir destino)`}
+                        aria-label={`Categoría: ${categoryMeta.label} (clic para elegir destino)`}
+                      >
+                        <CategoryIcon className="w-4 h-4" />
+                      </button>
+
+                      <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{categoryMeta.label}</span>
+
+                      {doseTimesToday.length > 0 && (
+                        <span className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1 text-[12px] font-semibold text-blue-700">
+                          <Clock3 className="w-3.5 h-3.5" /> {doseTimesToday.join(', ')}
+                        </span>
+                      )}
                     </div>
-                  </td>
-                  <td className="p-1 md:p-1.5 text-center font-semibold text-slate-700">{daysActive}</td>
-                  <td className="p-1 md:p-1.5"><input type="date" className={`min-w-0 w-full h-8 lg:h-9 border-slate-300 rounded-md text-xs lg:text-sm p-1 md:p-1.5 print:border-none print:bg-transparent ${isSuspended ? 'bg-slate-200' : ''}`} value={item.fechaInicio} onChange={(e) => updateItem(item.id, 'fechaInicio', e.target.value)} /></td>
-                  <td className="p-1 md:p-1.5 text-center">
-                    <button
-                      type="button"
-                      onClick={() => updateItemStatus(item.id, isSuspended ? 'Activo' : 'Suspendido')}
-                      className={`inline-flex h-7 w-7 lg:h-8 lg:w-8 items-center justify-center rounded-md border shadow-sm transition ${isSuspended ? 'border-red-300 bg-red-50 text-red-700 hover:bg-red-100' : 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'}`}
-                      title={isSuspended ? 'Suspendido (clic para activar)' : 'Activo (clic para suspender)'}
-                      aria-label={isSuspended ? 'Suspendido (clic para activar)' : 'Activo (clic para suspender)'}
-                      aria-pressed={isSuspended}
-                    >
-                      <Pill className="w-3.5 h-3.5" />
-                    </button>
-                  </td>
-                  <td className="p-1 md:p-1.5 text-center print:hidden">
-                    <div className="flex items-center justify-center gap-1.5 lg:gap-2">
-                      <button onClick={() => onDuplicateItem(item)} className="inline-flex h-8 w-8 lg:h-9 lg:w-9 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-700 shadow-sm hover:bg-slate-100 hover:border-slate-400 transition" title="Duplicar medicamento"><Copy className="w-4 h-4" /></button>
-                      <button onClick={() => onViewDilution(item.principio)} className="inline-flex h-8 w-8 lg:h-9 lg:w-9 items-center justify-center rounded-md border border-cyan-200 bg-cyan-50 text-cyan-700 shadow-sm hover:bg-cyan-100 hover:border-cyan-300 transition" title="Ver dilución del medicamento"><Microscope className="w-4 h-4" /></button>
-                      <button onClick={() => onViewItem(item.id)} className={`inline-flex h-8 w-8 lg:h-9 lg:w-9 items-center justify-center rounded-md border shadow-sm transition ${modalOnlyChanged ? 'border-violet-300 bg-violet-100 text-violet-700 hover:bg-violet-200 hover:border-violet-400' : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 hover:border-blue-300'}`} title={modalOnlyChanged ? 'Hay cambios pendientes en campos del detalle' : 'Ver detalle'}><Eye className="w-4 h-4" /></button>
-                      <button onClick={() => onDeleteItem(item)} className="inline-flex h-8 w-8 lg:h-9 lg:w-9 items-center justify-center rounded-md border border-red-200 bg-red-50 text-red-700 shadow-sm hover:bg-red-100 hover:border-red-300 transition" title="Eliminar"><Trash2 className="w-4 h-4" /></button>
+
+                    <div className="inline-flex items-center gap-2 text-xs">
+                      {isQuirofano && !isSuspended && <span className="px-2 py-1 rounded-full bg-amber-500 text-white font-bold uppercase tracking-wide">Quirófano</span>}
+                      {isPrn && !isSuspended && <span className="px-2 py-1 rounded-full bg-violet-600 text-white font-bold uppercase tracking-wide">PRN</span>}
+                      {isSuspended && <span className="px-2 py-1 rounded-full bg-slate-600 text-white font-bold uppercase tracking-wide">Suspendido</span>}
                     </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                  </div>
+
+                  <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2">
+                    <div className="min-w-0 flex-1 space-y-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2">
+                        <div className="xl:col-span-2">
+                          <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">Principio Activo</label>
+                          <input type="text" className={`${inputClass} ${isSuspended ? 'line-through' : 'font-medium'}`} value={item.principio || ''} onChange={(e) => updateItem(item.id, 'principio', e.target.value)} />
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">Marca Com.</label>
+                          <input type="text" className={inputClass} value={item.marcaComercial || ''} onChange={(e) => updateItem(item.id, 'marcaComercial', e.target.value)} placeholder="Opcional" />
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">Dosis</label>
+                          <input type="text" className={inputClass} value={item.dosis || ''} onChange={(e) => updateItem(item.id, 'dosis', e.target.value)} />
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">Frecuencia</label>
+                          <select
+                            className={`${inputClass} p-1.5 font-medium`}
+                            value={frequencySelection}
+                            onChange={(e) => updateItem(item.id, 'frecuenciaPreset', e.target.value)}
+                          >
+                            <option value="">Seleccionar...</option>
+                            {frequencyOptions.map((option) => (
+                              <option key={option} value={option}>{option}</option>
+                            ))}
+                            {hasCustomFrequency && <option value={frequencySelection}>Personalizada: {frequencySelection}</option>}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-end gap-2">
+                        <div className="w-full sm:w-[210px]">
+                          <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">F. Inicio</label>
+                          <input type="date" className={`${inputClass} p-1.5`} value={item.fechaInicio || ''} onChange={(e) => updateItem(item.id, 'fechaInicio', e.target.value)} />
+                        </div>
+                        <span className="bg-white/80 px-2.5 py-1.5 rounded-md border border-slate-200 shadow-sm text-xs font-medium text-slate-600">Días activos: {daysActive}</span>
+                        <span className="bg-white/80 px-2.5 py-1.5 rounded-md border border-slate-200 shadow-sm text-xs font-medium text-slate-600">Estado: {isSuspended ? 'Suspendido' : 'Activo'}</span>
+                      </div>
+                    </div>
+
+                    <div className="lg:w-[220px] flex flex-col gap-1.5 print:hidden">
+                      <button
+                        type="button"
+                        onClick={() => updateItemStatus(item.id, isSuspended ? 'Activo' : 'Suspendido')}
+                        className={`inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg border shadow-sm transition text-sm font-semibold ${isSuspended ? 'border-red-300 bg-red-50 text-red-700 hover:bg-red-100' : 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'}`}
+                        title={isSuspended ? 'Suspendido (clic para activar)' : 'Activo (clic para suspender)'}
+                        aria-label={isSuspended ? 'Suspendido (clic para activar)' : 'Activo (clic para suspender)'}
+                        aria-pressed={isSuspended}
+                      >
+                        <Pill className="w-4 h-4" />
+                        <span>{isSuspended ? 'Reactivar medicamento' : 'Suspender medicamento'}</span>
+                      </button>
+
+                      <div className="inline-flex w-full items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+                        <button onClick={() => onDuplicateItem(item)} className="inline-flex h-9 w-full items-center justify-center border-r border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-800 transition" title="Duplicar medicamento"><Copy className="w-4 h-4" /></button>
+                        <button onClick={() => onViewDilution(item.principio)} className="inline-flex h-9 w-full items-center justify-center border-r border-slate-200 text-cyan-700 hover:bg-cyan-50 transition" title="Ver dilución del medicamento"><Microscope className="w-4 h-4" /></button>
+                        <button onClick={() => onViewItem(item.id)} className={`inline-flex h-9 w-full items-center justify-center border-r border-slate-200 transition ${modalOnlyChanged ? 'text-violet-700 bg-violet-50 hover:bg-violet-100' : 'text-blue-700 hover:bg-blue-50'}`} title={modalOnlyChanged ? 'Hay cambios pendientes en campos del detalle' : 'Ver detalle'}><Eye className="w-4 h-4" /></button>
+                        <button onClick={() => onDeleteItem(item)} className="inline-flex h-9 w-full items-center justify-center text-red-700 hover:bg-red-50 transition" title="Eliminar"><Trash2 className="w-4 h-4" /></button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
       </div>
 
       {categoryPicker.open && (
@@ -1875,6 +2302,7 @@ function PharmaSection({ title, items, updateItem, updateItemStatus, onDuplicate
 function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPharmaStatusChange, onSolFieldChange, onSolStatusChange, onDuplicatePharmaToEgreso, patient, pharmaItemIds = [], onPrevPharmaItem, onNextPharmaItem }) {
   if (!item) return null;
 
+  const frequencyOptions = ['Dosis Única', 'c/ 4 hrs', 'c/ 6 hrs', 'c/ 8 hrs', 'c/ 12 hrs', 'c/ 24 hrs', 'Continua', 'Esquema', 'Rég. Especial'];
   const isSolution = type === 'solucion';
   const isHighRiskMed = !isSolution && item.categoria === 'Alto Riesgo';
   const isSuspended = item.estado === 'Suspendido';
@@ -1899,6 +2327,23 @@ function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPha
     if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
     return (hh * 60) + mm;
   })();
+
+  const resolveFrequencySelection = (value = '') => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (frequencyOptions.includes(raw)) return raw;
+
+    const parsed = parseFrequency(raw);
+    if (parsed?.value) {
+      const candidate = `c/ ${parsed.value} ${parsed.unit}`;
+      if (frequencyOptions.includes(candidate)) return candidate;
+    }
+
+    return raw;
+  };
+
+  const frequencySelection = resolveFrequencySelection(item.frecuencia || '');
+  const hasCustomFrequency = frequencySelection && !frequencyOptions.includes(frequencySelection);
 
   const formatMinutesToAmPm = (totalMinutes) => {
     const normalized = ((totalMinutes % (24 * 60)) + (24 * 60)) % (24 * 60);
@@ -2164,25 +2609,17 @@ function MedicationDetailModal({ type, item, onClose, onPharmaFieldChange, onPha
                     <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="Dosis" value={item.dosis || ''} onChange={(e) => updateField('dosis', e.target.value)} /></div>
                     <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm">
                       <label className="fc-label truncate" title="Frecuencia">Frecuencia</label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          className="fc-input"
-                          value={frequency.value}
-                          onChange={(e) => updateField('frecuencia', e.target.value)}
-                          placeholder="0"
-                        />
-                        <select
-                          className="fc-input w-[96px]"
-                          value={frequency.unit}
-                          onChange={(e) => updateField('frecuenciaUnidad', e.target.value)}
-                        >
-                          <option value="hrs">hrs</option>
-                          <option value="min">min</option>
-                        </select>
-                      </div>
+                      <select
+                        className="fc-input"
+                        value={frequencySelection}
+                        onChange={(e) => updateField('frecuenciaPreset', e.target.value)}
+                      >
+                        <option value="">Seleccionar frecuencia...</option>
+                        {frequencyOptions.map((option) => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                        {hasCustomFrequency && <option value={frequencySelection}>Personalizada: {frequencySelection}</option>}
+                      </select>
                     </div>
                     <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="F. Inicio" type="date" value={item.fechaInicio || ''} onChange={(e) => updateField('fechaInicio', e.target.value)} /></div>
                     {isSuspended && <div className="rounded-lg border border-white/80 bg-white/80 p-2 shadow-sm"><FormInput label="F. Suspensión" type="date" value={item.fechaSuspension || ''} onChange={(e) => updateField('fechaSuspension', e.target.value)} /></div>}

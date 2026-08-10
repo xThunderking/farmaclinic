@@ -2190,6 +2190,8 @@ export default function App() {
   };
 
   const diasEstancia = calculateDaysOfUse(activePatientForEditing.demographics.ingreso, activePatientForEditing.demographics.egreso);
+  const alergiasRaw = String(activePatientForEditing.demographics.alergias || '').trim();
+  const hasAlergiaResumen = alergiasRaw !== '' && !['no', 'ninguna', 'ninguno', 'na', 'n/a'].includes(alergiasRaw.toLowerCase());
 
   return (
     <div className="h-screen overflow-hidden bg-slate-50 flex flex-col font-sans text-slate-800 print:bg-white print:h-auto print:overflow-visible relative">
@@ -2284,6 +2286,32 @@ export default function App() {
               <div className="relative mb-4 lg:mb-0 lg:absolute lg:top-0 lg:right-0 bg-green-50 text-green-700 border border-green-100 lg:border-l lg:border-b lg:border-t-0 lg:border-r-0 px-3 py-1 text-xs font-bold rounded-md lg:rounded-bl-xl lg:rounded-tr-xl flex items-center">
                   <CheckCircle className="w-3 h-3 mr-1" /> Edición exclusiva activa.
                </div>
+            )}
+
+            {activeTab === 'pharmacotherapy' && (
+              <section className="xl:hidden mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex items-start gap-3">
+                  <div className="h-11 w-11 shrink-0 rounded-full border border-slate-200 bg-slate-100 flex items-center justify-center">
+                    <Users className="w-5 h-5 text-slate-500" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-xl font-bold text-slate-900 leading-tight">
+                      Cama {activePatientForEditing.demographics.habitacion || '-'} - {activePatientForEditing.demographics.nombre || 'Sin nombre'}
+                    </h3>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-700">
+                      <span>{edad ? `${edad} años` : 'Edad N/D'}</span>
+                      <span className="text-slate-300">|</span>
+                      <span>{activePatientForEditing.demographics.peso ? `${activePatientForEditing.demographics.peso} kg` : 'Peso N/D'}</span>
+                      {hasAlergiaResumen && (
+                        <span className="inline-flex items-center rounded-md border border-red-200 bg-red-50 px-2 py-0.5 text-red-700 font-medium">
+                          <AlertTriangle className="w-3.5 h-3.5 mr-1" />
+                          Alergia: {alergiasRaw}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </section>
             )}
 
             {activeTab === 'demographics' && <DemographicsTab patient={activePatientForEditing} updatePatient={updatePatient} allPatients={patients} />}

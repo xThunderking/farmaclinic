@@ -18,6 +18,88 @@
   .fc-textarea {
     @apply w-full min-h-[76px] resize-y rounded-lg border border-slate-300 bg-slate-50 p-2 text-sm text-slate-800 shadow-sm transition placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100;
   }
+
+  /* Selector compacto del perfil farmacoterapéutico. Replica el patrón
+     inline-edit de la maqueta sin alterar el comportamiento del control. */
+  .fc-inline-select {
+    appearance: none;
+    cursor: pointer;
+    border-color: transparent;
+    border-radius: 4px;
+    padding-right: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .fc-inline-select:hover,
+  .fc-inline-select:focus {
+    background-color: #f1f5f9;
+    border-color: #cbd5e1;
+    outline: none;
+    box-shadow: none;
+  }
+
+  .fc-compact-card select {
+    appearance: none;
+    cursor: pointer;
+    border-radius: 4px;
+    padding-right: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .fc-compact-card select:hover,
+  .fc-compact-card select:focus {
+    background-color: #f1f5f9;
+    border-color: #cbd5e1;
+    outline: none;
+    box-shadow: none;
+  }
+
+  .fc-compact-card {
+    transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  }
+
+  .fc-compact-card:hover {
+    box-shadow: 0 3px 10px -4px rgba(15, 23, 42, 0.22);
+  }
+
+  .fc-compact-card button[title*="Suspender"],
+  .fc-compact-card button[title*="Reactivar"] {
+    background-color: #ecfdf5;
+  }
+
+  .fc-compact-card button[title="Ver detalle"] {
+    background-color: #eff6ff;
+  }
+
+  .fc-compact-card button[title="Ver dilución"] {
+    background-color: #ecfeff;
+  }
+
+  .fc-compact-card button[title="Duplicar"] {
+    background-color: #f8fafc;
+  }
+
+  .fc-compact-card button[title="Eliminar"] {
+    background-color: #fff7f7;
+  }
+
+  .fc-compact-card button:hover {
+    filter: saturate(1.15) brightness(0.98);
+  }
+
+  @media (pointer: coarse) {
+    .fc-compact-card select {
+      min-height: 32px;
+      padding-left: 8px;
+      padding-right: 18px;
+    }
+  }
 }
 
 body {
