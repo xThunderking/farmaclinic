@@ -56,11 +56,14 @@ Para que sirve:
 Comando:
 
 ```bash
+cd /home/sistemas/farmaclinic/frontend
+cp -f .env.production.internal.example .env.production
+npm run build
 docker restart farmaclinic-web
 ```
 
 Para que sirve:
-- Reinicia Nginx del frontend publicado en 8081.
+- Recompila el frontend y actualiza los archivos servidos por Nginx en 8081.
 
 ### Paso 3 - Validar salud
 
@@ -120,12 +123,14 @@ cd /home/sistemas/farmaclinic/frontend
 npm ci || npm install
 cp -f .env.production.internal.example .env.production
 npm run build
+docker restart farmaclinic-web
 ```
 
 Para que sirve:
 - Instalar dependencias frontend.
 - Preparar variables de entorno de produccion.
 - Generar archivos finales en frontend/dist.
+- Recargar el contenedor nginx para servir el build nuevo.
 
 ### Paso 4 - Reiniciar backend
 
@@ -224,6 +229,8 @@ Solucion:
 
 ```bash
 cd /home/sistemas/farmaclinic/frontend
+npm ci || npm install
+cp -f .env.production.internal.example .env.production
 npm run build
 cd /home/sistemas/farmaclinic
 docker restart farmaclinic-web
