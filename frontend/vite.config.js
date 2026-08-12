@@ -17,5 +17,9 @@ export default defineConfig(({ mode }) => {
   return {
     base: normalizeBasePath(env.VITE_BASE_PATH),
     plugins: [react()],
+    build: {
+      // ExcelJS se carga bajo demanda al importar o exportar diluciones.
+      chunkSizeWarningLimit: 1000,
+    },
   }
 })

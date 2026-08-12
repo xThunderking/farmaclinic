@@ -126,8 +126,18 @@ const getApiBaseCandidates = () => {
   const host = window.location.hostname;
   const origin = normalizeApiBase(window.location.origin);
   const hostPort4000 = host ? `${window.location.protocol}//${host}:4000` : 'http://localhost:4000';
+  const hostPort4100 = host ? `${window.location.protocol}//${host}:4100` : 'http://localhost:4100';
 
-  const candidates = [envBase, hostPort4000, origin, 'http://127.0.0.1:4000', 'http://localhost:4000']
+  const candidates = [
+    envBase,
+    hostPort4100,
+    hostPort4000,
+    origin,
+    'http://127.0.0.1:4100',
+    'http://localhost:4100',
+    'http://127.0.0.1:4000',
+    'http://localhost:4000',
+  ]
     .map(normalizeApiBase)
     .filter(Boolean);
 
@@ -140,7 +150,12 @@ let resolvingApiBasePromise = null;
 const probeApiBase = async (base) => {
   try {
     const res = await fetch(`${base}/api/health`, { method: 'GET' });
-    return res.ok;
+    if (!res.ok || !(res.headers.get('content-type') || '').includes('application/json')) {
+      return false;
+    }
+
+    const payload = await res.json();
+    return payload?.ok === true && payload?.servicio === 'farmaclinic-api';
   } catch {
     return false;
   }
@@ -1101,7 +1116,9 @@ export default function App() {
         }),
       })
         .then(() => setSyncError(''))
-        .catch(() => setSyncError('No se pudo sincronizar la tabla de diluciones con BD.'));
+        .catch((error) => setSyncError(
+          error?.message || 'No se pudo sincronizar la tabla de diluciones con BD.'
+        ));
     }, 220);
 
     return () => {

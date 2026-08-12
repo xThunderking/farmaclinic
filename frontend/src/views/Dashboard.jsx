@@ -18,6 +18,30 @@ const getNextReminderDateTime = (minutes = 30) => {
   };
 };
 
+const parseCsvRow = (line = '') => {
+  const values = [];
+  let value = '';
+  let quoted = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '"' && quoted && line[index + 1] === '"') {
+      value += '"';
+      index += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === ',' && !quoted) {
+      values.push(value);
+      value = '';
+    } else {
+      value += char;
+    }
+  }
+
+  values.push(value);
+  return values;
+};
+
 export default function Dashboard({ patients, dilutionsTable, onDilutionsTableChange, reminders = [], onCreateReminder, onSelect, onCreate, onDelete, onRestore, onHardDelete, currentUser, users, helpers, constants }) {
   const { calculateAge, calculateDaysOfUse, calculateCrCl, getTfgColorClass, listOtherActiveUsers, formatExcelDate, exportToCSV } = helpers;
   const { ADULTO_MAYOR_EDAD, CATEGORIAS_PRM, MESES, ANIOS } = constants;
@@ -662,12 +686,11 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
     setDilutionsError('');
 
     try {
-      const XLSX = await import('xlsx/xlsx.mjs');
-      const worksheet = XLSX.utils.aoa_to_sheet([defaultDilutionColumns]);
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, 'Diluciones');
-
-      const fileData = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+      const ExcelJS = (await import('exceljs')).default;
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('Diluciones');
+      worksheet.addRow(defaultDilutionColumns);
+      const fileData = await workbook.xlsx.writeBuffer();
       const blob = new Blob([fileData], {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       });
@@ -694,15 +717,31 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
     setDilutionsError('');
 
     try {
-      const XLSX = await import('xlsx/xlsx.mjs');
       const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: 'array' });
-      const sheetName = workbook?.SheetNames?.[0];
+      const isCsv = file.name.toLowerCase().endsWith('.csv');
+      let sheetName = file.name;
+      let matrix;
 
-      if (!sheetName) throw new Error('Sin hojas');
+      if (isCsv) {
+        const text = new TextDecoder('utf-8').decode(buffer).replace(/^\uFEFF/, '');
+        matrix = text.split(/\r?\n/).map(parseCsvRow);
+      } else {
+        const ExcelJS = (await import('exceljs')).default;
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(buffer);
+        const worksheet = workbook.worksheets[0];
+        if (!worksheet) throw new Error('Sin hojas');
+        sheetName = worksheet.name;
+        matrix = [];
+        worksheet.eachRow({ includeEmpty: true }, (row) => {
+          const values = [];
+          for (let column = 1; column <= worksheet.actualColumnCount; column += 1) {
+            values.push(row.getCell(column).text || '');
+          }
+          matrix.push(values);
+        });
+      }
 
-      const worksheet = workbook.Sheets[sheetName];
-      const matrix = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false, defval: '' });
       const nonEmptyRows = (matrix || []).filter((row) => Array.isArray(row) && row.some((cell) => String(cell ?? '').trim() !== ''));
 
       if (!nonEmptyRows.length) throw new Error('Sin datos');
@@ -1514,7 +1553,7 @@ export default function Dashboard({ patients, dilutionsTable, onDilutionsTableCh
                   <input
                     ref={dilutionFileInputRef}
                     type="file"
-                    accept=".xlsx,.xls,.csv"
+                    accept=".xlsx,.csv"
                     className="hidden"
                     onChange={handleDilutionsFileChange}
                   />

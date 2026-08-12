@@ -41,7 +41,7 @@ function broadcastSseEvent(event, payload, options = {}) {
 }
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '20mb' }));
 
 app.get('/api/events', (req, res) => {
   const clientId = String(req.query.clientId || '');
@@ -180,8 +180,19 @@ app.put('/api/dilutions', async (req, res) => {
     broadcastSseEvent('dilutions-updated', { ts: Date.now() }, { excludeClientId: sourceClientId });
     res.json({ ok: true, updatedAt: result.updatedAt });
   } catch (error) {
+    console.error('Error sincronizando tabla de diluciones:', error);
     res.status(500).json({ error: 'No se pudo sincronizar la tabla de diluciones.' });
   }
+});
+
+app.use((error, _req, res, next) => {
+  if (error?.type === 'entity.too.large') {
+    return res.status(413).json({
+      error: 'La tabla de diluciones supera el limite permitido de 20 MB.',
+    });
+  }
+
+  return next(error);
 });
 
 app.post('/api/patient-lock/acquire', async (req, res) => {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { flushSync } from 'react-dom';
 import {
   Activity,
   AlertTriangle,
@@ -12,6 +13,7 @@ import {
   Eye,
   FileText,
   FileWarning,
+  GripVertical,
   Layers,
   ListChecks,
   Microscope,
@@ -935,6 +937,8 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
   const [showDoseScheduleModal, setShowDoseScheduleModal] = useState(false);
   const [dilutionSearch, setDilutionSearch] = useState('');
   const [medDilutionModal, setMedDilutionModal] = useState({ open: false, medicationName: '', rows: [] });
+  const [draggedMedicationId, setDraggedMedicationId] = useState('');
+  const [dragTargetCategory, setDragTargetCategory] = useState(null);
   const persistedPharmaById = useMemo(
     () => new Map((sourcePatient?.perfilFarmaco || []).map((item) => [item.id, item])),
     [sourcePatient?.perfilFarmaco],
@@ -1208,6 +1212,11 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
       .sort((a, b) => a.time.localeCompare(b.time));
   }, [todayDoseSchedule]);
 
+  const doseTimesByMedicationId = useMemo(
+    () => new Map(todayDoseSchedule.entries.map((entry) => [entry.id, entry.times])),
+    [todayDoseSchedule],
+  );
+
   const recalculateInfusionFields = (item, field) => {
     const updatedItem = { ...item };
     const v = parseFloat(updatedItem.volumen);
@@ -1478,10 +1487,73 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
     return haystack.includes(normalizedPharmaSearch);
   });
 
-  const pendientes = filteredPharmaItems.filter((i) => !CATEGORIAS_FARMACO.includes(i.categoria));
-  const atbs = filteredPharmaItems.filter((i) => i.categoria === 'Antibiótico');
-  const altos = filteredPharmaItems.filter((i) => i.categoria === 'Alto Riesgo');
-  const gens = filteredPharmaItems.filter((i) => i.categoria === 'General');
+  const activeFirst = (group) => [...group].sort((a, b) => {
+    const aSuspended = a.estado === 'Suspendido';
+    const bSuspended = b.estado === 'Suspendido';
+    return Number(aSuspended) - Number(bSuspended);
+  });
+  const pendientes = activeFirst(filteredPharmaItems.filter((i) => !CATEGORIAS_FARMACO.includes(i.categoria)));
+  const atbs = activeFirst(filteredPharmaItems.filter((i) => i.categoria === 'Antibiótico'));
+  const altos = activeFirst(filteredPharmaItems.filter((i) => i.categoria === 'Alto Riesgo'));
+  const gens = activeFirst(filteredPharmaItems.filter((i) => i.categoria === 'General'));
+
+  const handleMedicationDragStart = (event, item) => {
+    const itemId = String(item?.id || '');
+    if (!itemId) return;
+
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', itemId);
+    const card = event.currentTarget.closest('article');
+    if (card && typeof event.dataTransfer.setDragImage === 'function') {
+      event.dataTransfer.setDragImage(card, 24, 24);
+    }
+    setDraggedMedicationId(itemId);
+  };
+
+  const clearMedicationDrag = () => {
+    setDraggedMedicationId('');
+    setDragTargetCategory(null);
+  };
+
+  const handleMedicationDragOverCategory = (event, category) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    if (dragTargetCategory !== category) setDragTargetCategory(category);
+  };
+
+  const handleMedicationDrop = (event, category) => {
+    event.preventDefault();
+    const itemId = draggedMedicationId || event.dataTransfer.getData('text/plain');
+    const medication = items.find((item) => String(item.id) === String(itemId));
+    if (!medication) {
+      clearMedicationDrag();
+      return;
+    }
+
+    const nextCategory = String(category || '');
+    if (String(medication.categoria || '') === nextCategory) {
+      clearMedicationDrag();
+      return;
+    }
+
+    const commitMove = () => flushSync(() => updateItem(medication.id, 'categoria', nextCategory));
+    if (typeof document !== 'undefined' && typeof document.startViewTransition === 'function') {
+      document.startViewTransition(commitMove);
+    } else {
+      commitMove();
+    }
+    clearMedicationDrag();
+  };
+
+  const pharmaDragProps = {
+    draggedMedicationId,
+    dragTargetCategory,
+    onMedicationDragStart: handleMedicationDragStart,
+    onMedicationDragEnd: clearMedicationDrag,
+    onMedicationDragOverCategory: handleMedicationDragOverCategory,
+    onMedicationDrop: handleMedicationDrop,
+  };
+
   const pharmaNavigationIds = useMemo(() => items.map((med) => med.id), [items]);
 
   const goToAdjacentPharmaModal = useCallback((direction) => {
@@ -1696,16 +1768,18 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
         </span>
       </div>
 
-      <div className="hidden bg-blue-50 border border-blue-200 rounded-lg p-2 justify-start sm:justify-end shadow-sm print:bg-transparent print:border-none print:shadow-none mb-4">
+      <div className="flex bg-blue-50 border border-blue-200 rounded-lg p-2 justify-start sm:justify-end shadow-sm print:bg-transparent print:border-none print:shadow-none mb-4">
         <label className="flex items-center space-x-2 cursor-pointer bg-white px-3 py-1.5 rounded-md shadow-sm border border-blue-200 print:border-none print:shadow-none print:bg-transparent print:p-0 w-full sm:w-auto">
           <input type="checkbox" className="w-4 h-4 text-blue-600 rounded" checked={meta.evaluadoPrevioPrimeraDosis} onChange={(e) => updateMeta('evaluadoPrevioPrimeraDosis', e.target.checked)} />
           <span className="font-semibold text-sm text-slate-800">Idoneidad evaluada antes de 1ra dosis</span>
         </label>
       </div>
 
-      {pendientes.length > 0 && (
+      {(pendientes.length > 0 || draggedMedicationId) && (
         <CompactPharmaSection
           title="Clasificación inicial de fármacos"
+          category=""
+          {...pharmaDragProps}
           items={pendientes}
           updateItem={updateItem}
           updateItemStatus={updateItemStatus}
@@ -1717,11 +1791,14 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
           onToggleReviewed={toggleMedicationReviewed}
           hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
           dischargeDate={patient.demographics.egreso}
+          doseTimesByMedicationId={doseTimesByMedicationId}
           theme="blue"
         />
       )}
       <CompactPharmaSection
         title="Terapia Antimicrobiana"
+        category="Antibiótico"
+        {...pharmaDragProps}
         items={atbs}
         updateItem={updateItem}
         updateItemStatus={updateItemStatus}
@@ -1733,10 +1810,13 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
         onToggleReviewed={toggleMedicationReviewed}
         hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
         dischargeDate={patient.demographics.egreso}
+        doseTimesByMedicationId={doseTimesByMedicationId}
         theme="orange"
       />
       <CompactPharmaSection
         title="Medicamentos de Alto Riesgo"
+        category="Alto Riesgo"
+        {...pharmaDragProps}
         items={altos}
         updateItem={updateItem}
         updateItemStatus={updateItemStatus}
@@ -1748,10 +1828,13 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
         onToggleReviewed={toggleMedicationReviewed}
         hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
         dischargeDate={patient.demographics.egreso}
+        doseTimesByMedicationId={doseTimesByMedicationId}
         theme="red"
       />
       <CompactPharmaSection
         title="Medicamentos Generales"
+        category="General"
+        {...pharmaDragProps}
         items={gens}
         updateItem={updateItem}
         updateItemStatus={updateItemStatus}
@@ -1763,6 +1846,7 @@ function PharmacotherapyTab({ patient, sourcePatient, updatePatient, dilutionsTa
         onToggleReviewed={toggleMedicationReviewed}
         hasModalOnlyChanges={(item) => hasModalOnlyChanges(item, persistedPharmaById.get(item.id), PHARMA_MODAL_FIELDS, PHARMA_DEFAULTS)}
         dischargeDate={patient.demographics.egreso}
+        doseTimesByMedicationId={doseTimesByMedicationId}
         theme="blue"
       />
 
@@ -1945,19 +2029,32 @@ function CompactSolutionsSection({ items, updateItem, onView, onDelete, onToggle
   );
 }
 
-function CompactPharmaSection({ title, items, updateItem, updateItemStatus, onDuplicateItem = () => {}, onDeleteItem, onViewItem, onViewDilution = () => {}, dischargeDate, theme, reviewedMap = {}, onToggleReviewed = () => {} }) {
+function CompactPharmaSection({ title, category = '', items, updateItem, updateItemStatus, onDuplicateItem = () => {}, onDeleteItem, onViewItem, onViewDilution = () => {}, dischargeDate, doseTimesByMedicationId = new Map(), theme, reviewedMap = {}, onToggleReviewed = () => {}, draggedMedicationId = '', dragTargetCategory = null, onMedicationDragStart = () => {}, onMedicationDragEnd = () => {}, onMedicationDragOverCategory = () => {}, onMedicationDrop = () => {} }) {
   const colors = theme === 'orange' ? 'border-orange-200 bg-orange-100 text-orange-900' : theme === 'red' ? 'border-red-200 bg-red-100 text-red-900' : 'border-blue-200 bg-blue-100 text-blue-900';
   const dot = theme === 'orange' ? 'bg-orange-500' : theme === 'red' ? 'bg-red-600' : 'bg-blue-600';
   const edge = theme === 'orange' ? 'border-l-orange-500' : theme === 'red' ? 'border-l-fuchsia-500' : 'border-l-blue-500';
   const surface = theme === 'orange' ? 'border-orange-100 bg-orange-50/30' : theme === 'red' ? 'border-red-100 bg-red-50/25' : 'border-blue-100 bg-blue-50/25';
-  return <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-    <div className={`flex h-9 items-center justify-between border-b px-3 text-xs font-bold uppercase tracking-wide lg:text-sm ${colors}`}><span className="flex items-center gap-2"><i className={`h-1.5 w-1.5 rounded-full ${dot}`} />{title}</span><span className="rounded-full bg-white/40 px-2 py-0.5 text-xs">{items.length}</span></div>
+  const isDropTarget = Boolean(draggedMedicationId) && dragTargetCategory === category;
+  return <section
+    onDragEnter={(event) => onMedicationDragOverCategory(event, category)}
+    onDragOver={(event) => onMedicationDragOverCategory(event, category)}
+    onDrop={(event) => onMedicationDrop(event, category)}
+    className={`overflow-hidden rounded-lg border bg-white shadow-sm transition-all duration-200 ${isDropTarget ? 'scale-[1.01] border-indigo-400 ring-2 ring-indigo-300 ring-offset-2' : 'border-slate-200'}`}
+  >
+    <div className={`flex h-9 items-center justify-between border-b px-3 text-xs font-bold uppercase tracking-wide lg:text-sm ${colors}`}><span className="flex items-center gap-2"><i className={`h-1.5 w-1.5 rounded-full ${dot}`} />{title}</span><span className="flex items-center gap-2">{isDropTarget && <span className="animate-pulse rounded bg-white/80 px-2 py-0.5 text-[10px] text-indigo-700">Soltar aquí</span>}<span className="rounded-full bg-white/40 px-2 py-0.5 text-xs">{items.length}</span></span></div>
     <div className="space-y-1.5 p-2">{items.length === 0 && <p className="py-3 text-center text-xs italic text-slate-400">No hay registros.</p>}{items.map((item) => {
       const suspended = item.estado === 'Suspendido'; const reviewed = reviewedMap[item.id] === true; const days = item.fechaInicio ? (calculateDaysOfUse(item.fechaInicio, suspended ? item.fechaSuspension : dischargeDate) || '-') : '-';
-      return <article key={item.id} className={`fc-compact-card flex min-h-[74px] flex-col gap-2 rounded-md border border-l-2 p-2.5 sm:flex-row sm:items-center lg:p-3 ${suspended ? 'border-slate-300 bg-slate-100 opacity-65' : `${edge} ${item.prn ? 'border-fuchsia-100 bg-fuchsia-50/60' : item.quirofano ? 'border-amber-200 bg-amber-50/70' : surface}`}`}>
-        <button onClick={() => onToggleReviewed(item.id)} className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border ${reviewed ? 'border-emerald-400 bg-emerald-50 text-emerald-500' : 'border-slate-200 bg-slate-100 text-transparent'}`}><CheckCircle className="h-4 w-4" /></button>
+      const doseTimes = doseTimesByMedicationId.get(item.id) || [];
+      const isDragging = String(draggedMedicationId) === String(item.id);
+      const transitionName = `pharma-card-${String(item.id).replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+      return <article key={item.id} style={{ viewTransitionName: transitionName }} className={`fc-compact-card flex min-h-[74px] flex-col gap-2 rounded-md border border-l-2 p-2.5 sm:flex-row sm:items-center lg:p-3 ${isDragging ? 'scale-[0.98] !opacity-40 shadow-lg' : ''} ${suspended ? (item.quirofano ? 'border-amber-300 border-l-amber-500 bg-gradient-to-r from-amber-100/80 to-slate-200/80 opacity-80' : 'border-slate-300 bg-slate-100 opacity-65') : `${edge} ${item.prn ? 'border-fuchsia-100 bg-fuchsia-50/60' : item.quirofano ? 'border-amber-200 bg-amber-50/70' : surface}`}`}>
+        <div className="flex shrink-0 items-center gap-1 sm:flex-col">
+          <button draggable onDragStart={(event) => onMedicationDragStart(event, item)} onDragEnd={onMedicationDragEnd} className="flex h-6 w-6 cursor-grab items-center justify-center rounded border border-slate-200 bg-white text-slate-400 shadow-sm hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 active:cursor-grabbing" title="Arrastrar para cambiar categoría" aria-label={`Arrastrar ${item.principio || 'medicamento'} para cambiar categoría`}><GripVertical className="h-4 w-4" /></button>
+          <button onClick={() => onToggleReviewed(item.id)} className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border ${reviewed ? 'border-emerald-400 bg-emerald-50 text-emerald-500' : 'border-slate-200 bg-slate-100 text-transparent'}`} title="Marcar como revisado"><CheckCircle className="h-4 w-4" /></button>
+        </div>
         <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><input value={item.principio || ''} onChange={(e) => updateItem(item.id, 'principio', e.target.value)} placeholder="MEDICAMENTO" className={`min-w-[130px] max-w-[260px] border-0 bg-transparent p-0 text-sm font-bold uppercase text-slate-800 focus:ring-0 lg:text-[15px] ${suspended ? 'line-through' : ''}`} /><input value={item.marcaComercial || ''} onChange={(e) => updateItem(item.id, 'marcaComercial', e.target.value)} placeholder="Marca" className="w-24 border-0 bg-transparent p-0 text-xs text-slate-500 focus:ring-0" /><i className="h-4 border-l border-slate-300" /><input value={item.dosis || ''} onChange={(e) => updateItem(item.id, 'dosis', e.target.value)} placeholder="Dosis" className="w-20 border-0 bg-blue-50 p-0.5 text-center text-sm font-bold text-blue-700 focus:ring-0" /><select value={item.frecuencia || ''} onChange={(e) => updateItem(item.id, 'frecuenciaPreset', e.target.value)} className="h-7 rounded border-0 bg-slate-100 py-0 pl-2 pr-7 text-xs font-semibold text-slate-700 focus:ring-1 focus:ring-blue-300"><option value="">Frecuencia</option><option value="Dosis Única">Única</option><option value="Continua">Continua</option><option value="Esquema">Esquema</option><option value="PRN">PRN</option><option value="c/ 4 hrs">c/4h</option><option value="c/ 6 hrs">c/6h</option><option value="c/ 8 hrs">c/8h</option><option value="c/ 12 hrs">c/12h</option><option value="c/ 24 hrs">c/24h</option><option value="c/ 48 hrs">c/48h</option><option value="c/ 72 hrs">c/72h</option></select>{item.prn && <span className="rounded bg-fuchsia-600 px-1.5 py-0.5 text-[11px] font-bold text-white">PRN</span>}{item.quirofano && <span className="rounded bg-amber-500 px-1.5 py-0.5 text-[11px] font-bold text-white">QX</span>}</div>
         <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] lg:text-xs"><label className="relative"><span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-blue-500">●</span><select value={item.via || ''} onChange={(e) => updateItem(item.id, 'via', e.target.value)} className="h-7 min-w-[120px] rounded border border-slate-200 bg-white py-0 pl-5 pr-7 text-xs text-slate-700 focus:border-blue-300 focus:ring-1 focus:ring-blue-200"><option value="">Vía</option>{VIAS.map((via) => <option key={via} value={via}>{via}</option>)}</select></label><label className="relative"><span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-blue-500">◆</span><select value={item.presentacion || ''} onChange={(e) => updateItem(item.id, 'presentacion', e.target.value)} className="h-7 min-w-[100px] rounded border border-slate-200 bg-white py-0 pl-5 pr-7 text-xs text-slate-700 focus:border-blue-300 focus:ring-1 focus:ring-blue-200"><option value="">Presentación</option>{PRESENTACIONES.map((option) => <option key={option} value={option}>{option}</option>)}</select></label><select value={item.idoneidad || 'Pendiente'} onChange={(e) => updateItem(item.id, 'idoneidad', e.target.value)} className={`h-7 min-w-[100px] rounded border py-0 pl-2 pr-7 text-xs font-semibold focus:ring-1 ${item.idoneidad === 'Idóneo' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : item.idoneidad === 'No Idóneo' ? 'border-red-200 bg-red-50 text-red-700' : 'border-slate-200 bg-slate-100 text-slate-600'}`}>{IDONEIDAD_OPCIONES.map((option) => <option key={option} value={option}>{option}</option>)}</select><span className="rounded bg-slate-100 px-2 py-0.5 text-slate-500">▣ Día {days}</span>{item.volumen && <span className="rounded bg-indigo-50 px-2 py-0.5 text-indigo-600">♧ {item.volumen}mL</span>}{item.tiempo && <span className="rounded bg-indigo-50 px-2 py-0.5 text-indigo-600">⌛ {item.tiempo}h</span>}{item.velocidad && <span className="rounded bg-indigo-50 px-2 py-0.5 text-indigo-600">⌁ {item.velocidad}mL/h</span>}</div></div>
+        {doseTimes.length > 0 && <div className="flex max-w-[260px] flex-wrap items-center gap-1"><Clock3 className="h-3.5 w-3.5 shrink-0 text-indigo-500" />{doseTimes.map((time) => <time key={`${item.id}-${time}`} className="rounded border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 text-[11px] font-bold text-indigo-700">{time}</time>)}</div>}
         <span className="hidden text-[9px] text-slate-400 lg:block">In: {item.fechaInicio || '-'}</span><div className="flex shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white"><button onClick={() => updateItemStatus(item.id, suspended ? 'Activo' : 'Suspendido')} className={`h-9 w-9 border-r border-slate-200 ${suspended ? 'text-red-500 hover:bg-red-50' : 'text-emerald-600 hover:bg-emerald-50'}`} title={suspended ? 'Reactivar medicamento' : 'Suspender medicamento'}><Pill className="mx-auto h-3.5 w-3.5" /></button><button onClick={() => onViewItem(item.id)} className="h-9 w-9 border-r border-slate-200 text-blue-600 hover:bg-blue-50" title="Ver detalle"><Eye className="mx-auto h-4 w-4" /></button><button onClick={() => onViewDilution(item.principio)} className="h-9 w-9 border-r border-slate-200 text-cyan-600 hover:bg-cyan-50" title="Ver dilución"><Microscope className="mx-auto h-4 w-4" /></button><button onClick={() => onDuplicateItem(item)} className="h-9 w-9 border-r border-slate-200 text-slate-500 hover:bg-slate-50" title="Duplicar"><Copy className="mx-auto h-3.5 w-3.5" /></button><button onClick={() => onDeleteItem(item)} className="h-9 w-9 text-slate-400 hover:bg-red-50 hover:text-red-600" title="Eliminar"><Trash2 className="mx-auto h-3.5 w-3.5" /></button></div>
       </article>;
     })}</div>
